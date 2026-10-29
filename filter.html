@@ -12,7 +12,7 @@ about what Chrome on the Pixel allows, before any real feature is built:
   3. After the app is closed and reopened, can it get back to the folder without asking?
   4. How long does recognition take per photo on the phone (MediaPipe image classifier)?
 
-APP_VERSION 0.0.1 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.0.2 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -182,7 +182,7 @@ pre{margin:0 0 14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/17px v
 
   <section class="card" id="card-move">
     <div class="card-head"><span class="edge">02</span><h2>Safe move</h2><span class="verdict" id="verdict-move"></span></div>
-    <p class="cap">Makes its own test picture, moves it into a new subfolder the safe way, then forces a bad copy to show the original is kept. Cleans up after. Your photos are not touched.</p>
+    <p class="cap">Makes its own test picture, moves it into a new subfolder the safe way, then forces a bad copy to show the original is kept. Cleans up after, including anything left by an earlier run that was cut off. Your photos are not touched. In a big folder this takes a minute or more: keep the app open until the card says pass or fail.</p>
     <div class="actions"><button class="btn" id="btn-move" disabled>Run safe move test</button></div>
     <div class="rows" id="rows-move"></div>
   </section>
@@ -225,7 +225,7 @@ pre{margin:0 0 14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/17px v
    a. Settings
    ============================================================ */
 
-const APP_VERSION = '0.0.1';
+const APP_VERSION = '0.0.2';
 
 // Kept in one object so the tests can shrink them (a smaller test picture, a
 // shorter stall timer). The phone always runs with these values.
@@ -326,21 +326,24 @@ core.exists = async (dir, name) => {
 // Never throws: the returned log says how far it got, why it stopped, and what
 // was kept ('original', 'both' or, after a good move, 'copy').
 // opts.alterCopy(file) is for the probe's forced mismatch only: it returns the
-// bytes to write in place of the original's.
+// bytes to write in place of the original's. opts.onStep(step) hears each step
+// as it starts, for a progress line.
 core.safeMove = async (fromDir, name, toDir, opts = {}) => {
   const now = opts.now || (() => performance.now());
-  const log = { name, ok: false, step: 'read original', kept: 'original', ms: {} };
+  const log = { name, ok: false, step: '', kept: 'original', ms: {} };
+  const at = (s) => { log.step = s; if (opts.onStep) opts.onStep(s); };
   let t = now();
   const lap = (k) => { const n = now(); log.ms[k] = n - t; t = n; };
   try {
+    at('read original');
     const src = await fromDir.getFileHandle(name);
     const orig = await src.getFile();
     log.size = orig.size;
     log.sha256 = await core.sha256(orig);
     lap('hash');
-    log.step = 'check target';
+    at('check target');
     if (await core.exists(toDir, name)) { log.reason = 'the target folder already has a file with this name'; return log; }
-    log.step = 'copy';
+    at('copy');
     const dst = await toDir.getFileHandle(name, { create: true });
     log.kept = 'both';
     const w = await dst.createWritable();
@@ -352,24 +355,24 @@ core.safeMove = async (fromDir, name, toDir, opts = {}) => {
       throw e;
     }
     lap('copy');
-    log.step = 'read back';
+    at('read back');
     const copy = await (await toDir.getFileHandle(name)).getFile();
     log.copySize = copy.size;
     log.copySha256 = await core.sha256(copy);
     lap('readBack');
-    log.step = 'compare';
+    at('compare');
     if (copy.size !== orig.size) { log.reason = 'size differs: copy ' + copy.size + ' B, original ' + orig.size + ' B'; return log; }
     if (log.copySha256 !== log.sha256) { log.reason = 'SHA-256 differs'; return log; }
-    log.step = 'recheck original';
+    at('recheck original');
     const again = await src.getFile();
     if (again.size !== orig.size || again.lastModified !== orig.lastModified) { log.reason = 'the original changed during the copy'; return log; }
-    log.step = 'delete original';
+    at('delete original');
     await fromDir.removeEntry(name);
     lap('delete');
     log.kept = 'copy';
     log.originalGone = !(await core.exists(fromDir, name));
     if (!log.originalGone) { log.kept = 'both'; log.reason = 'the original is still listed after the delete'; return log; }
-    log.step = 'done';
+    at('done');
     log.ok = true;
   } catch (e) {
     log.reason = (e && e.name ? e.name + ': ' : '') + ((e && e.message) || String(e));
@@ -461,11 +464,21 @@ function refreshButtons() {
   $('#btn-ask').disabled = busy;
   $('#btn-clear').disabled = busy;
 }
+// While a test runs, the strip shows what it is doing and the seconds since it
+// started, so a slow step on the phone visibly keeps going.
+let taskLabel = '';
+const step = (label) => { taskLabel = label; };
 async function task(label, fn) {
   if (busy) return;
-  busy = true; refreshButtons(); status(label, true);
+  busy = true; refreshButtons();
+  taskLabel = label;
+  const t0 = Date.now();
+  const tick = () => status(taskLabel + ' ▸ ' + Math.round((Date.now() - t0) / 1000) + ' s', true);
+  tick();
+  const timer = setInterval(tick, 1000);
   try { await fn(); }
   finally {
+    clearInterval(timer);
     busy = false; refreshButtons();
     status(folder ? 'folder ▸ ' + folder.name : 'no folder yet');
   }
@@ -515,13 +528,23 @@ const isStandalone = () => matchMedia('(display-mode: standalone)').matches;
 
 /* ---------- 00 This phone ---------- */
 
-function deviceRows() {
+// The plain browser ID always says "Android 10" and hides the minor Chrome
+// version; the real values have to be asked for separately (client hints).
+async function deviceRows() {
   const ua = navigator.userAgent;
-  const chrome = (ua.match(/Chrome\/([\d.]+)/) || [])[1] || 'not Chrome';
-  const android = (ua.match(/Android ([\d.]+)/) || [])[1] || 'not Android';
+  let chrome = (ua.match(/Chrome\/([\d.]+)/) || [])[1] || 'not Chrome';
+  let android = /Android/.test(ua) ? 'unknown (the browser ID always says 10)' : 'not Android';
+  let model = '';
+  try {
+    const d = navigator.userAgentData;
+    const h = await d.getHighEntropyValues(['platformVersion', 'model', 'fullVersionList']);
+    const full = (h.fullVersionList || []).find((b) => /Chrom/.test(b.brand));
+    if (full) chrome = full.version;
+    if (d.platform === 'Android') { android = h.platformVersion || android; model = h.model || ''; }
+  } catch (e) { /* older Chrome: keep what the browser ID says */ }
   return [
     ['Chrome', chrome],
-    ['Android', android],
+    ['Android', android + (model ? ', ' + model : '')],
     ['Opened as', isStandalone() ? 'installed app' : 'browser tab', isStandalone() ? 'pass' : 'watch'],
     ['Folder API', 'showDirectoryPicker' in window ? 'available' : 'missing', 'showDirectoryPicker' in window ? 'pass' : 'fail'],
     ['Processor', (navigator.hardwareConcurrency || '?') + ' cores, ' + (navigator.deviceMemory ? navigator.deviceMemory + ' GB memory as Chrome reports it (rounded, often capped)' : 'memory not reported')],
@@ -676,15 +699,45 @@ async function runMoveTest() {
   const root = folder;
   const made = [];           // [dir, name] of every probe file still to clean up
   let sub = null, subMade = false;
+  const times = (m) => ['hash', 'copy', 'readBack', 'delete'].filter((k) => k in m)
+    .map((k) => ({ hash: 'hash ', copy: 'copy ', readBack: 'read back and hash ', delete: 'delete ' })[k] + fmtMs(m[k])).join(', ');
   try {
-    // 1. Subfolder
-    try { await root.getDirectoryHandle(PROBE_FOLDER); }
-    catch (e) { if (e && e.name === 'NotFoundError') subMade = true; else throw e; }
+    // 0. Leftovers from an earlier run that was cut off (the app closed mid-test):
+    // any name starting with PROBE_PREFIX. Chrome's half-written temporary files
+    // (name.crswap) start the same way, so they are found too. Listing the
+    // whole folder is slow in a big folder, so it is timed.
+    step('looking for leftovers');
     let t0 = now();
-    sub = await root.getDirectoryHandle(PROBE_FOLDER, { create: true });
+    const it = root.values();
+    let listed = 0, stalled = false;
+    for (;;) {
+      const b = await core.readBatch(it, { limit: config.batch, stallMs: config.stallMs });
+      listed += b.entries.length;
+      for (const e of b.entries) if (e.kind !== 'folder' && e.name.startsWith(PROBE_PREFIX)) made.push([root, e.name]);
+      if (b.stalled) { stalled = true; break; }
+      if (b.done) break;
+      step('looking for leftovers, ' + listed + ' listed');
+    }
+    add('Full listing', listed + ' entries in ' + fmtMs(now() - t0) + (stalled ? ', stalled' : ''), stalled ? 'watch' : undefined);
+    try { sub = await root.getDirectoryHandle(PROBE_FOLDER); }
+    catch (e) { if (e && e.name === 'NotFoundError') subMade = true; else throw e; }
+    if (sub) for await (const h of sub.values()) if (h.kind === 'file' && h.name.startsWith(PROBE_PREFIX)) made.push([sub, h.name]);
+    if (made.length) {
+      step('removing leftovers');
+      const old = made.splice(0);
+      let n = 0;
+      for (const [dir, nm] of old) { try { await removeProbeFile(dir, nm); n++; } catch (e) { add('Leftover', nm + ' not removed: ' + errText(e), 'watch'); } }
+      add('Leftovers', n + ' from an earlier run removed: ' + old.map((x) => x[1]).join(', '), 'pass');
+    } else add('Leftovers', 'none');
+
+    // 1. Subfolder
+    step('creating the subfolder');
+    t0 = now();
+    if (!sub) sub = await root.getDirectoryHandle(PROBE_FOLDER, { create: true });
     add('Subfolder', PROBE_FOLDER + (subMade ? ' created in ' + fmtMs(now() - t0) : ' was already there, kept'), 'pass');
 
     // 2. Test picture, written into the picked folder like a new photo
+    step('writing the test picture');
     const blob = await makeTestImage(config.testImageSide);
     const name = PROBE_PREFIX + 'move-' + stamp() + '.png';
     t0 = now();
@@ -692,8 +745,16 @@ async function runMoveTest() {
     made.push([root, name]);
     add('Test file', name + ', ' + fmtMB(blob.size) + ', written in ' + fmtMs(now() - t0), 'pass');
 
+    // Finding a file by name: is it slow only in a big folder?
+    step('timing name lookups');
+    t0 = now(); await core.exists(root, name); const lookRoot = now() - t0;
+    t0 = now(); await core.exists(sub, PROBE_PREFIX + 'none.png'); const lookSub = now() - t0;
+    add('Name lookup', fmtMs(lookRoot) + ' in ' + root.name + ', ' + fmtMs(lookSub) + ' in ' + PROBE_FOLDER + '/');
+
     // 3. The safe move
-    const log = await core.safeMove(root, name, sub);
+    t0 = now();
+    const log = await core.safeMove(root, name, sub, { onStep: (st) => step('safe move: ' + st) });
+    const total = now() - t0;
     made.length = 0;
     made.push(log.kept === 'copy' ? [sub, name] : [root, name]);
     if (log.kept === 'both') made.push([sub, name]);
@@ -701,22 +762,20 @@ async function runMoveTest() {
     add('Size', log.size + ' B original, ' + log.copySize + ' B copy', log.size === log.copySize ? 'pass' : 'fail');
     add('SHA-256', short(log.sha256) + (log.copySha256 === log.sha256 ? ' on both' : ' vs copy ' + short(log.copySha256)), log.copySha256 === log.sha256 ? 'pass' : 'fail');
     if (log.ok) add('Original', 'deleted, and no longer listed in the folder', 'pass');
-    const m = log.ms;
-    if (log.ok) {
-      add('Times', 'hash ' + fmtMs(m.hash) + ', copy ' + fmtMs(m.copy) + ', read back and hash ' + fmtMs(m.readBack) + ', delete ' + fmtMs(m.delete));
-      const total = m.hash + m.copy + m.readBack + m.delete;
-      add('Speed', fmtMs(total) + ' for the whole move, ' + (log.size / 1e6 / (total / 1000)).toFixed(1) + ' MB/s');
-    }
+    add('Times', times(log.ms) + (log.ok ? ', then the check it is gone' : ''));
+    add('Whole move', fmtMs(total) + (log.ok ? ', ' + (log.size / 1e6 / (total / 1000)).toFixed(2) + ' MB/s' : ''));
 
     // 4. Forced mismatch: the copy is written with one byte changed
+    step('writing the second test picture');
     const blob2 = await makeTestImage(config.testImageSide);
     const name2 = PROBE_PREFIX + 'mismatch-' + stamp() + '.png';
     await writeProbeFile(root, name2, blob2);
     made.push([root, name2]);
-    const bad = await core.safeMove(root, name2, sub, { alterCopy: flipMiddleByte });
+    const bad = await core.safeMove(root, name2, sub, { alterCopy: flipMiddleByte, onStep: (st) => step('bad copy test: ' + st) });
     if (bad.kept !== 'original') made.push([sub, name2]);
     const caught = !bad.ok && bad.step === 'compare' && bad.kept === 'both';
     add('Bad copy', caught ? 'caught: ' + bad.reason + ', stopped before any delete' : (bad.ok ? 'NOT caught: the original was deleted' : 'stopped at ' + bad.step + ': ' + bad.reason), caught ? 'pass' : 'fail');
+    step('checking the original');
     let kept = false;
     try {
       const f = await (await root.getFileHandle(name2)).getFile();
@@ -727,17 +786,24 @@ async function runMoveTest() {
     add('Error', errText(e), 'fail');
   }
 
-  // 5. Clean up: only the files this run made, then the subfolder if it is new and empty.
+  // 5. Clean up: only the probe's own files, then its subfolder if that is now
+  // empty (without the recursive option the browser will not delete a folder
+  // that still holds anything, so a folder with other files in it stays).
+  step('cleaning up');
   const gone = [], left = [];
   for (const [dir, n] of made) {
     try { await removeProbeFile(dir, n); gone.push(n); }
     catch (e) { if (!(e && e.name === 'NotFoundError')) left.push(n + ' (' + errText(e) + ')'); }
   }
-  if (sub && subMade) {
+  let note = '';
+  if (sub) {
     try { await removeProbeFolder(root); gone.push(PROBE_FOLDER + '/'); }
-    catch (e) { left.push(PROBE_FOLDER + '/ (' + errText(e) + ')'); }
+    catch (e) {
+      if (e && e.name === 'InvalidModificationError' && !subMade) note = ', ' + PROBE_FOLDER + '/ kept: it holds other files';
+      else left.push(PROBE_FOLDER + '/ (' + errText(e) + ')');
+    }
   }
-  add('Clean up', gone.length + ' removed' + (left.length ? ', left: ' + left.join(', ') : ''), left.length ? 'watch' : 'pass');
+  add('Clean up', gone.length + ' removed' + note + (left.length ? ', left: ' + left.join(', ') : ''), left.length ? 'watch' : 'pass');
   setSection('move', rows, verdict);
 }
 
@@ -768,11 +834,13 @@ async function checkReopen() {
   saveAttempt(rec, attempt);
 }
 
-// Can the folder really be listed? One entry is enough.
+// Can the folder really be listed? One entry is enough. A big folder takes
+// seconds to give its first entry, so this uses the same stall timer as 01.
 async function tryRead(h) {
+  const t0 = now();
   try {
-    const r = await core.nextOrStall(h.values(), 5000);
-    return r.stalled ? 'stalled' : 'ok';
+    const r = await core.nextOrStall(h.values(), config.stallMs);
+    return r.stalled ? 'stalled' : 'ok in ' + fmtMs(now() - t0);
   } catch (e) { return 'failed, ' + errText(e); }
 }
 
@@ -781,7 +849,7 @@ function saveAttempt(rec, attempt) {
   const attempts = prev.filter((a) => a.storedAt === rec.storedAt).concat([{ ...attempt, storedAt: rec.storedAt }]).slice(-6);
   const rows = [['Stored', rec.name + ', picked ' + fmtDate(rec.storedAt) + ' ' + fmtTime(rec.storedAt)]];
   for (const a of attempts) {
-    const tone = a.state === 'granted' && (!a.read || a.read === 'ok') ? (a.asked ? 'watch' : 'pass') : a.state === 'prompt' ? 'watch' : 'fail';
+    const tone = a.state === 'granted' && (!a.read || a.read.startsWith('ok')) ? (a.asked ? 'watch' : 'pass') : a.state === 'prompt' ? 'watch' : 'fail';
     rows.push(['Open ' + a.open, fmtTime(a.at) + ', ' + a.mins + ' min after picking, ' + (a.app ? 'installed app' : 'browser tab') +
       ', permission ' + a.state + (a.asked ? ' after asking (' + a.asked + ')' : ' without asking') + (a.read ? ', read ' + a.read : ''), tone]);
   }
@@ -893,13 +961,13 @@ $('#btn-copy').addEventListener('click', async () => {
 
 // Two taps to clear, so a stray tap does not lose a run's results.
 let clearArmed = 0;
-$('#btn-clear').addEventListener('click', () => {
+$('#btn-clear').addEventListener('click', async () => {
   const b = $('#btn-clear');
   if (Date.now() - clearArmed > 3000) { clearArmed = Date.now(); b.textContent = 'Sure?'; setTimeout(() => { b.textContent = 'Clear'; }, 3000); return; }
   clearArmed = 0; b.textContent = 'Clear';
   results = {};
   saveResults();
-  setSection('device', deviceRows(), null);
+  setSection('device', await deviceRows(), null);
   for (const s of SECTIONS) render(s.id);
 });
 
@@ -950,8 +1018,8 @@ $('#btn-install').addEventListener('click', async () => {
 window.filter = { core, config, reportText, results: () => results, state: () => ({ folder, lastBatch, busy }) };
 
 $('#edge-date').textContent = fmtDate(Date.now()) + ' ▸ v' + APP_VERSION;
-setSection('device', deviceRows(), null);
 for (const s of SECTIONS) render(s.id);
+deviceRows().then((rows) => setSection('device', rows, null));
 refreshButtons();
 status('no folder yet');
 window.filterReady = task('checking the stored folder', checkReopen);

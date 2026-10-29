@@ -38,6 +38,7 @@ function loadPlaywright() {
 }
 
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+const VERSION = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8').match(/const CACHE_VERSION = '([^']+)'/)[1];
 
 /* ---------- Static server ---------- */
 
@@ -389,10 +390,12 @@ async function moveCase(page, { size = 300000, fault = {}, alter = false, clash 
     const ops = [];
     const f = fault.from ? fx.wrap(from, fault.from, ops, 'from') : fx.wrap(from, null, ops, 'from');
     const t = fault.to ? fx.wrap(to, fault.to, ops, 'to') : fx.wrap(to, null, ops, 'to');
-    const opts = alter ? { alterCopy: async (file) => { const b = new Uint8Array(await file.arrayBuffer()); b[b.length >> 1] ^= 0xFF; return b; } } : {};
+    const steps = [];
+    const opts = { onStep: (st) => steps.push(st) };
+    if (alter) opts.alterCopy = async (file) => { const b = new Uint8Array(await file.arrayBuffer()); b[b.length >> 1] ^= 0xFF; return b; };
     const log = await c.safeMove(f, name, t, opts);
     return {
-      log, ops, before, name,
+      log, ops, before, name, steps,
       srcSha: missing ? null : await fx.sha(new Blob([bytes])),
       fromHas: await fx.has(from, name), toHas: await fx.has(to, name),
       fromSha: (await fx.has(from, name)) ? await fx.shaOf(from, name) : null,
@@ -414,6 +417,7 @@ test('safe move: copies, reads back, checks size and SHA-256, then deletes the o
   eq([r.fromHas, r.toHas, r.toSha], [false, true, r.srcSha], 'original gone, copy byte-identical');
   for (const k of ['hash', 'copy', 'readBack', 'delete']) assert(typeof L.ms[k] === 'number' && L.ms[k] >= 0, 'time for ' + k);
   assert(!L.reason, 'no reason on success: ' + L.reason);
+  eq(r.steps, ['read original', 'check target', 'copy', 'read back', 'compare', 'recheck original', 'delete original', 'done'], 'each step reported as it starts');
   await ctx.close();
 }, { core: true });
 
@@ -425,6 +429,7 @@ test('safe move: a forced bad copy (one byte changed) stops and keeps both', asy
   eq([r.fromHas, r.fromSha], [true, r.srcSha], 'original kept, unchanged');
   assert(r.toHas && r.toSha !== r.srcSha && r.toSize === 300000, 'the bad copy is left beside it, same size, different bytes');
   assert(!r.ops.some((o) => o.includes('removeEntry')), 'nothing deleted');
+  eq(r.steps, ['read original', 'check target', 'copy', 'read back', 'compare'], 'steps stop at the compare');
   await ctx.close();
 }, { core: true });
 
@@ -546,6 +551,7 @@ test('page opens clean: darkroom, four questions, buttons wait for a folder', as
     disabled: ['#btn-read', '#btn-count', '#btn-move', '#btn-recog'].map((s) => document.querySelector(s).disabled),
     pick: document.querySelector('#btn-pick').disabled,
     status: document.querySelector('#status').textContent,
+    device: window.filter.results().device.rows.map((r) => r[1]),
     reopen: window.filter.results().reopen.rows[0],
     small: [...document.querySelectorAll('button:not([hidden])')].filter((b) => b.offsetParent && (b.offsetWidth < 44 || b.offsetHeight < 44)).map((b) => b.id || b.textContent),
     overflow: document.documentElement.scrollWidth > window.innerWidth,
@@ -555,6 +561,8 @@ test('page opens clean: darkroom, four questions, buttons wait for a folder', as
   eq(r.disabled, [true, true, true, true], 'folder buttons disabled');
   eq(r.pick, false, 'pick enabled');
   eq(r.status, 'no folder yet', 'status');
+  assert(/^\d+\.\d+\.\d+\.\d+$/.test(r.device[0]) && !/\.0\.0\.0$/.test(r.device[0]), 'full Chrome version from client hints: ' + r.device[0]);
+  eq(r.device[1], 'not Android', 'Android row on a desktop test browser');
   assert(/no folder yet/.test(r.reopen[1]), 'reopen says nothing stored yet');
   eq(r.small, [], 'tap targets under 44 px');
   eq(r.overflow, false, 'no sideways scroll at phone width');
@@ -646,7 +654,11 @@ test('02 safe move: the full test passes, cleans up, and leaves the real files u
   assert(/^caught: SHA-256 differs/.test(s.rows['Bad copy'].v), 'bad copy caught: ' + s.rows['Bad copy'].v);
   const originals = s.list.filter((r) => r[0] === 'Original').map((r) => r[1]);
   eq(originals, ['deleted, and no longer listed in the folder', 'kept, unchanged (same SHA-256 as before)'], 'originals');
-  assert(/MB\/s$/.test(s.rows.Speed.v), 'speed: ' + s.rows.Speed.v);
+  assert(/^[\d.]+ ms, [\d.]+ MB\/s$/.test(s.rows['Whole move'].v), 'whole move: ' + s.rows['Whole move'].v);
+  assert(/^hash [\d.]+ ms, copy [\d.]+ ms, read back and hash [\d.]+ ms, delete [\d.]+ ms, then the check it is gone$/.test(s.rows.Times.v), 'times: ' + s.rows.Times.v);
+  assert(/^20 entries in [\d.]+ ms$/.test(s.rows['Full listing'].v), 'full listing: ' + s.rows['Full listing'].v);
+  eq(s.rows.Leftovers.v, 'none', 'no leftovers');
+  assert(/^[\d.]+ ms in Camera, [\d.]+ ms in filter-probe\/$/.test(s.rows['Name lookup'].v), 'lookups: ' + s.rows['Name lookup'].v);
   eq(s.rows['Clean up'].v, '4 removed', 'clean up: the moved copy, the bad copy, its original, and the subfolder');
   const after = await page.evaluate(async () => window.__fx.tree(await window.__fx.dir('DCIM/Camera')));
   eq(after, before, 'the camera folder is exactly as it was, file for file and hash for hash');
@@ -668,9 +680,33 @@ test('02 safe move: an existing filter-probe folder and its contents are left al
   const s = await section(page, 'move');
   eq(s.verdict, 'pass', 'verdict');
   eq(s.rows.Subfolder.v, 'filter-probe was already there, kept', 'subfolder');
-  eq(s.rows['Clean up'].v, '3 removed', 'only the probe files removed');
+  eq(s.rows['Clean up'].v, '3 removed, filter-probe/ kept: it holds other files', 'only the probe files removed');
   const after = await page.evaluate(async () => window.__fx.tree(await window.__fx.dir('DCIM/Camera')));
   eq(after, before, 'folder and keep.jpg as before');
+  await ctx.close();
+});
+
+test('02 safe move: leftovers from a run cut off part way are cleaned up first', async () => {
+  const { ctx, page } = await newApp();
+  const clean = await page.evaluate(async () => { const cam = await window.__fx.camera(); return window.__fx.tree(cam); });
+  await page.evaluate(async () => {
+    const fx = window.__fx, cam = await fx.dir('DCIM/Camera');
+    const sub = await cam.getDirectoryHandle('filter-probe', { create: true });
+    await fx.put(cam, 'filter-probe-move-261030-010438.png', fx.noise(2000, 4));
+    await fx.put(sub, 'filter-probe-move-261030-010438.png', fx.noise(900, 4));
+    await fx.put(sub, 'filter-probe-move-261030-010438.png.crswap', fx.noise(500, 4));
+    window.filter.config.testImageSide = 128;
+  });
+  await pick(page, 'DCIM/Camera');
+  await run(page, '#btn-move');
+  const s = await section(page, 'move');
+  eq(s.verdict, 'pass', 'verdict');
+  assert(/^22 entries in /.test(s.rows['Full listing'].v), 'listing counts the leftovers too: ' + s.rows['Full listing'].v);
+  assert(/^3 from an earlier run removed: /.test(s.rows.Leftovers.v) && s.rows.Leftovers.v.includes('.crswap'), 'leftovers: ' + s.rows.Leftovers.v);
+  eq(s.rows.Subfolder.v, 'filter-probe was already there, kept', 'subfolder');
+  eq(s.rows['Clean up'].v, '4 removed', 'then the run cleans up, including the now empty subfolder');
+  const after = await page.evaluate(async () => window.__fx.tree(await window.__fx.dir('DCIM/Camera')));
+  eq(after, clean, 'camera folder back to exactly the real files');
   await ctx.close();
 });
 
@@ -682,7 +718,7 @@ test('03 reopen: a stored folder comes back after a reload without asking', asyn
   const s = await section(page, 'reopen');
   eq(s.verdict, 'pass', 'verdict');
   assert(/^Camera, picked \d\d\/\d\d\/\d\d \d{4} hrs$/.test(s.rows.Stored.v), 'stored: ' + s.rows.Stored.v);
-  assert(/browser tab, permission granted without asking, read ok$/.test(s.rows['Open 1'].v), 'open 1: ' + s.rows['Open 1'].v);
+  assert(/browser tab, permission granted without asking, read ok in [\d.]+ ms$/.test(s.rows['Open 1'].v), 'open 1: ' + s.rows['Open 1'].v);
   const st = await page.evaluate(() => [document.querySelector('#btn-move').disabled, document.querySelector('#status').textContent, document.querySelector('#btn-ask').hidden]);
   eq(st, [false, 'folder ▸ Camera', true], 'folder usable straight away');
   await page.reload(); await ready(page);
@@ -704,7 +740,7 @@ test('03 reopen: when Chrome asks again, the probe records it and the ask button
   eq(st, [false, true], 'ask shown, folder not yet usable');
   await run(page, '#btn-ask');
   s = await section(page, 'reopen');
-  assert(/permission granted after asking \(granted in [\d.]+ ms\), read ok$/.test(s.rows['Open 1'].v), 'after asking: ' + s.rows['Open 1'].v);
+  assert(/permission granted after asking \(granted in [\d.]+ ms\), read ok in [\d.]+ ms$/.test(s.rows['Open 1'].v), 'after asking: ' + s.rows['Open 1'].v);
   eq(s.verdict, 'watch', 'asking is noted, not a pass');
   st = await page.evaluate(() => [document.querySelector('#btn-ask').hidden, document.querySelector('#btn-move').disabled]);
   eq(st, [true, false], 'folder usable after asking');
@@ -748,7 +784,7 @@ test('results: kept across a reload, copied as text, cleared with two taps', asy
   const [clip, text] = await page.evaluate(async () => [await navigator.clipboard.readText(), window.filter.reportText()]);
   const body = (t) => t.split('\n').slice(1).join('\n');
   eq(body(clip), body(text), 'clipboard holds the report');
-  assert(/^filter F0 probe v0\.0\.1, report made \d\d\/\d\d\/\d\d \d{4} hrs$/.test(clip.split('\n')[0]), 'header: ' + clip.split('\n')[0]);
+  assert(new RegExp('^filter F0 probe v' + VERSION.replace(/\./g, '\\.') + ', report made \\d\\d/\\d\\d/\\d\\d \\d{4} hrs$').test(clip.split('\n')[0]), 'header: ' + clip.split('\n')[0]);
   for (const h of ['00 THIS PHONE', '01 FOLDER [PASS]', '02 SAFE MOVE: not run', '03 REOPEN [PASS]', '04 RECOGNITION: not run']) assert(clip.includes(h), 'report has ' + h);
   assert(clip.includes('  Photos: 8'), 'report has the counts');
   assert(!clip.includes('—'), 'no em dashes');
@@ -762,12 +798,12 @@ test('results: kept across a reload, copied as text, cleared with two taps', asy
 test('offline: the service worker caches the app, MediaPipe and the model', async () => {
   const { ctx, page } = await newApp({ sw: true });
   await page.evaluate(() => navigator.serviceWorker.ready);
-  await page.waitForFunction(async () => {
+  await page.waitForFunction(async (version) => {
     const keys = await caches.keys();
-    if (!keys.includes('filter-v0.0.1')) return false;
+    if (!keys.includes('filter-v' + version)) return false;
     const v = keys.find((k) => k.startsWith('filter-mediapipe-'));
     return v && (await (await caches.open(v)).keys()).length === 4;
-  }, null, { timeout: 60000, polling: 250 });
+  }, VERSION, { timeout: 60000, polling: 250 });
   await ctx.setOffline(true);
   await page.reload(); await ready(page);
   const r = await page.evaluate(async () => {
