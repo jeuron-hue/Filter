@@ -996,6 +996,54 @@ test('copy: every copy lands in its folder byte-identical, originals untouched, 
   await ctx.close();
 });
 
+test('run details can be copied from the review, before anything is copied', async () => {
+  const { ctx, page } = await newApp({ clipboard: true });
+  await openCamera(page);
+  const before = await camTree(page);
+  await sort(page);
+  await page.click('.group[data-category="other"] .ph');
+  await page.click('#sheet-targets button[data-category="food"]');
+  await page.click('#btn-review-details');
+  await page.waitForSelector('#notice:not([hidden])');
+  const clip = await page.evaluate(() => navigator.clipboard.readText());
+  const lines = clip.split('\n');
+  assert(/^filter v[\d.]+ run \d\d\/\d\d\/\d\d \d{4} hrs, 10 photos, /.test(lines[0]), 'header: ' + lines[0]);
+  eq(lines.length, 11, 'a line per photo');
+  assert(lines.includes('PXL_20261029_100500000.jpg ▸ food (filter said other): nothing clear (best guess: hook 0.12)'), 'the change shows');
+  eq(await text(page, '#review-details-text'), clip, 'the same text on the review screen');
+  eq(await camTree(page), before, 'nothing written');
+  await ctx.close();
+});
+
+test('a re-check includes photos already sorted, copies nothing, and says where each already is', async () => {
+  const { ctx, page } = await newApp({ clipboard: true });
+  await openCamera(page);
+  await sort(page, 3);
+  await run(page, '#btn-copy');
+  await run(page, '#btn-again');
+  eq(await page.evaluate(() => [document.querySelector('#newest').value, document.querySelector('#btn-sort').textContent]), ['7', 'Sort photos'], 'a normal run counts the 7 not yet sorted');
+  await page.check('#recheck');
+  eq(await page.evaluate(() => [document.querySelector('#newest').value, document.querySelector('#btn-sort').textContent, document.querySelector('#btn-sort').disabled]),
+    ['10', 'Re-check photos', false], 'a re-check counts all 10');
+  const before = await camTree(page);
+  await sort(page, 4);
+  eq(Object.values(await plan(page)).flat().sort(), ['PXL_20261029_100700000.jpg', 'PXL_20261029_100800000.jpg', 'PXL_20261029_100900000.jpg', 'PXL_20261029_101000000.jpg'],
+    'the 4 newest, the 3 copied ones included');
+  const r = await page.evaluate(() => ({ copy: document.querySelector('#btn-copy').hidden, edge: document.querySelector('#bar-edge').textContent, cap: document.querySelector('#review-cap').textContent }));
+  eq(r, { copy: true, edge: 're-check ▸ 4 photos ▸ nothing copied', cap: 'A re-check: nothing will be copied. Copy the run details to compare.' }, 'nothing can be copied');
+  await page.click('#btn-review-details');
+  await page.waitForSelector('#notice:not([hidden])');
+  const lines = (await page.evaluate(() => navigator.clipboard.readText())).split('\n');
+  assert(/^filter v[\d.]+ re-check /.test(lines[0]), 'marked as a re-check: ' + lines[0]);
+  assert(lines.includes('PXL_20261029_101000000.jpg ▸ people: 3 people, 0.70 (closer look) [already in people]'), 'where it already is');
+  assert(lines.includes('PXL_20261029_100700000.jpg ▸ scenery: seashore 0.30, scenery 0.40'), 'not yet sorted: no mark');
+  eq(await camTree(page), before, 'nothing written by a re-check');
+  await page.click('#btn-restart'); await page.click('#btn-restart');
+  await page.uncheck('#recheck');
+  eq(await page.evaluate(() => document.querySelector('#newest').value), '7', 'switch off: back to the photos not yet sorted');
+  await ctx.close();
+});
+
 test('a second run skips what is already copied and takes the next newest', async () => {
   const { ctx, page } = await newApp();
   await openCamera(page);

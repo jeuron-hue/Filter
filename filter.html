@@ -152,6 +152,8 @@ body[data-screen="copy"] .screen[data-screen="copy"],body[data-screen="done"] .s
 .r .v.pass{color:var(--pass)} .r .v.watch{color:var(--watch)} .r .v.fail{color:var(--fail)}
 .field{display:flex;align-items:center;gap:12px;min-height:var(--tap)}
 .field label{flex:1;font-size:12px;line-height:16px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.check{display:flex;align-items:center;gap:12px;min-height:var(--tap);font-size:13px;line-height:18px;color:var(--ink-2)}
+.check input{width:24px;height:24px;margin:10px;flex:0 0 auto;accent-color:var(--amber)}
 input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-strong);border-radius:4px;background:var(--stage);color:var(--ink);padding:0 10px;font:14px var(--font-mono);text-align:right}
 
 /* Progress: a big count and a hairline bar. */
@@ -170,8 +172,8 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
 .ph.changed{outline:2px solid var(--amber);outline-offset:-2px}
 .ph .bad{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:10px var(--font-mono);color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
 
-#done-details summary{min-height:var(--tap);display:flex;align-items:center;cursor:pointer}
-#details-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/17px var(--font-mono);color:var(--ink-2);user-select:text}
+#done-details summary,#review-details summary{min-height:var(--tap);display:flex;align-items:center;cursor:pointer}
+#review-details-text,#details-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/17px var(--font-mono);color:var(--ink-2);user-select:text}
 
 /* Bottom bar: sprockets along the film edge, the one amber action. */
 .bar{position:sticky;bottom:0;z-index:5;background:var(--chrome);border-top:1px solid var(--line);padding:0 12px max(10px,env(safe-area-inset-bottom))}
@@ -231,6 +233,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
         <label for="newest">Newest photos to sort</label>
         <input type="number" id="newest" min="1" max="2000" step="1" value="200" inputmode="numeric">
       </div>
+      <label class="check"><input type="checkbox" id="recheck"><span>Re-check photos already sorted. Nothing is copied: for comparing what filter says now.</span></label>
       <p class="cap">Copies go into subfolders here: people, pets, food, screenshots, documents, scenery. Photos in "other" stay where they are. Nothing is moved or deleted.</p>
       <p class="note" id="setup-note"></p>
     </div>
@@ -251,8 +254,10 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
 
   <!-- Review: the plan, a grid per proposed folder. -->
   <section class="screen" data-screen="review">
-    <p class="cap">Tap a photo to send it to another folder. Nothing is copied until you tap Copy.</p>
+    <p class="cap" id="review-cap">Tap a photo to send it to another folder. Nothing is copied until you tap Copy.</p>
     <div id="groups" style="display:flex;flex-direction:column;gap:18px"></div>
+    <button class="btn" id="btn-review-details" style="align-self:center">Copy run details</button>
+    <details class="card" id="review-details"><summary class="cap">Run details: each photo, its folder and why</summary><pre id="review-details-text"></pre></details>
   </section>
 
   <!-- Copy: each copy is read back and checked. -->
@@ -837,13 +842,15 @@ const state = {
   sortedAll: new Set(),
   plan: [],           // one item per photo: { name, handle, category, first, reason, thumb }
   stopRequested: false,
+  recheck: false,     // a re-check run: photos already sorted included, nothing copied
+  wasIn: new Map(),   // name -> the folder it was already in when the run started
   lastRun: null,
 };
 
 function show(screen) {
   state.screen = screen;
   document.body.dataset.screen = screen;
-  $('#btn-copy').hidden = screen !== 'review';
+  $('#btn-copy').hidden = screen !== 'review' || state.recheck;
   $('#btn-restart').hidden = screen !== 'review';
   if (screen !== 'review') $('#bar-edge').textContent = fmtDate(Date.now()) + ' ▸ v' + APP_VERSION;
   window.scrollTo(0, 0);
@@ -992,9 +999,19 @@ async function openFolder(h) {
     ['Already sorted', String(photos.length - fresh)],
     ['Not yet sorted', String(fresh)],
   ]);
-  $('#newest').value = Math.min(config.newest, Math.max(1, fresh));
-  $('#btn-sort').disabled = fresh === 0;
-  if (!fresh) $('#setup-note').textContent = photos.length ? 'Every photo here is already sorted.' : 'No photos in this folder.';
+  state.fresh = fresh;
+  setupChoice();
+}
+
+// The sort button and the count follow the re-check switch: a re-check takes the
+// newest photos whether sorted or not.
+function setupChoice() {
+  const recheck = $('#recheck').checked;
+  const can = recheck ? state.photos.length : state.fresh;
+  $('#newest').value = Math.min(config.newest, Math.max(1, can));
+  $('#btn-sort').disabled = can === 0;
+  $('#btn-sort').textContent = recheck ? 'Re-check photos' : 'Sort photos';
+  $('#setup-note').textContent = can ? '' : state.photos.length ? 'Every photo here is already sorted. Re-check them with the switch above.' : 'No photos in this folder.';
 }
 
 /* ---------- Models ---------- */
@@ -1113,7 +1130,10 @@ function clearPlan() {
 
 async function runSort() {
   const n = Math.min(config.maxNewest, Math.max(1, Math.round(+$('#newest').value) || config.newest));
-  const pick = core.pickNewest(state.photos, state.sortedAll, n);
+  state.recheck = $('#recheck').checked;
+  state.wasIn = new Map();
+  for (const c of CATEGORIES) for (const name of state.sorted[c] || []) state.wasIn.set(name, c);
+  const pick = core.pickNewest(state.photos, state.recheck ? new Set() : state.sortedAll, n);
   if (!pick.chosen.length) return;
   clearPlan();
   state.stopRequested = false;
@@ -1219,7 +1239,9 @@ function renderReview() {
   const n = toCopy().length;
   $('#btn-copy').textContent = 'Copy ' + n;
   $('#btn-copy').disabled = n === 0;
-  $('#bar-edge').textContent = state.plan.length + ' photos ▸ ' + (state.plan.length - n) + ' stay';
+  $('#bar-edge').textContent = state.recheck ? 're-check ▸ ' + state.plan.length + ' photos ▸ nothing copied' : state.plan.length + ' photos ▸ ' + (state.plan.length - n) + ' stay';
+  $('#review-cap').textContent = state.recheck ? 'A re-check: nothing will be copied. Copy the run details to compare.' : 'Tap a photo to send it to another folder. Nothing is copied until you tap Copy.';
+  $('#review-details-text').textContent = runDetails();
 }
 
 let sheetIndex = -1;
@@ -1334,9 +1356,12 @@ function showDone(out, logName, logError, ms, total) {
 // pasting back to Claude when a photo went to the wrong folder. Names and reasons only.
 function runDetails() {
   const r = state.lastRun || {};
-  const head = 'filter v' + APP_VERSION + ' run ' + fmtDate(Date.now()) + ' ' + fmtTime(Date.now()) + ', ' + state.plan.length + ' photos, ' +
+  const head = 'filter v' + APP_VERSION + (state.recheck ? ' re-check' : ' run') + ' ' + fmtDate(Date.now()) + ' ' + fmtTime(Date.now()) + ', ' + state.plan.length + ' photos, ' +
     fmtS(r.perPhotoMs || 0) + ' per photo, closer look for ' + (r.closer || 0);
-  return [head].concat(state.plan.map((p) => p.name + ' ▸ ' + p.category + (p.category !== p.first ? ' (filter said ' + p.first + ')' : '') + ': ' + p.reason)).join('\n');
+  return [head].concat(state.plan.map((p) => {
+    const was = state.wasIn.get(p.name);
+    return p.name + ' ▸ ' + p.category + (p.category !== p.first ? ' (filter said ' + p.first + ')' : '') + ': ' + p.reason + (was ? ' [already in ' + was + ']' : '');
+  })).join('\n');
 }
 
 /* ---------- Wiring ---------- */
@@ -1348,16 +1373,22 @@ $('#btn-sort').addEventListener('click', () => task('sorting', runSort));
 $('#btn-stop-run').addEventListener('click', () => { state.stopRequested = true; step('stopping after this photo'); });
 $('#btn-copy').addEventListener('click', () => task('copying', runCopy));
 $('#btn-again').addEventListener('click', () => task('reading the folder', () => openFolder(state.folder)));
-$('#btn-details').addEventListener('click', async () => {
+// Run details to the clipboard, from the review or the done screen. If the
+// clipboard refuses, the text is opened and selected for copying by hand.
+async function copyDetails(panel, pre) {
   const text = runDetails();
+  pre.textContent = text;
   try { await navigator.clipboard.writeText(text); notice('Run details copied.'); }
   catch (e) {
-    $('#done-details').open = true;
-    const range = document.createRange(); range.selectNodeContents($('#details-text'));
+    panel.open = true;
+    const range = document.createRange(); range.selectNodeContents(pre);
     const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
     notice('The clipboard refused. The details are selected below: copy them by hand.');
   }
-});
+}
+$('#btn-details').addEventListener('click', () => copyDetails($('#done-details'), $('#details-text')));
+$('#btn-review-details').addEventListener('click', () => copyDetails($('#review-details'), $('#review-details-text')));
+$('#recheck').addEventListener('change', setupChoice);
 
 // Two taps to start over, so a stray tap does not lose a reviewed plan.
 let restartArmed = 0;
