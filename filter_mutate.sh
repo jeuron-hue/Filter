@@ -98,6 +98,15 @@ rules: seen pets and food ignored ||| if (o && o.count && o.score >= rules.thing
 rules: unsure things accepted ||| o.count && o.score >= rules.thingScore && ||| o.count &&
 rules: small things accepted ||| o.area >= rules.thingArea) return ||| true) return
 rules: food before pets ||| for (const g of ['pets', 'food']) { ||| for (const g of ['food', 'pets']) {
+grid: parts not spread to the edge ||| x: n > 1 ? Math.round(i * (w - tw) / (n - 1)) : 0 ||| x: n > 1 ? Math.round(i * w / n) : 0
+grid: rows spread by the width ||| y: n > 1 ? Math.round(j * (h - th) / (n - 1)) : 0 ||| y: n > 1 ? Math.round(j * (w - tw) / (n - 1)) : 0
+grid: part size ignores k ||| const tw = Math.round(w * k), th = Math.round(h * k), out = []; ||| const tw = Math.round(w / n), th = Math.round(h / n), out = [];
+merge: counts added across looks ||| o.count = Math.max(o.count, a.count); ||| o.count += a.count;
+merge: biggest not kept ||| o.area = Math.max(o.area, a.area); ||| o.area = a.area;
+merge: best label not kept ||| if (a.score > o.score) { o.score = a.score; o.name = a.name; } ||| { o.score = a.score; o.name = a.name; }
+merge: best of any box lost ||| o.best = Math.max(o.best, a.best || 0); ||| o.best = a.best || 0;
+objects: best of any box not tracked ||| if (groups[g].includes(d.name)) out[g].best = Math.max(out[g].best, d.score); ||| if (groups[g].includes(d.name)) out[g].best = 0;
+rules: best person left out of other ||| const person = ob.people && ob.people.best ? '; best person ' + ob.people.best.toFixed(2) : ''; ||| const person = '';
 rules: text ignored ||| if (p.text) return { category: 'documents' ||| if (false) return { category: 'documents'
 rules: all labels counted ||| const top = (p.labels || []).slice(0, rules.topLabels); ||| const top = (p.labels || []);
 rules: first group wins ||| if (mine.length && (!best || sum > best.sum)) ||| if (mine.length && !best)

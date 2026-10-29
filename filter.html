@@ -12,7 +12,7 @@ scenery); photos in "other" stay where they are and are not copied. Every copy
 is read back and checked byte for byte (size and SHA-256). F1 never deletes or
 overwrites anything. Each run writes a log to filter-logs/ in the picked folder.
 
-APP_VERSION 0.1.1 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.1.2 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -39,7 +39,12 @@ change the version here in the same commit as the file.
   about 2 m; filter also runs it on four overlapping quarters of each photo so
   faces down to about half that size are found. The object detector finds whole
   people (backs, crowds, heads out of frame), cats, dogs and common foods, which
-  the face detector and the classifier miss (Gary's first run, 30/10/26).
+  the face detector and the classifier miss (Gary's first run, 30/10/26). Photos
+  not already in people or screenshots get a closer look: decoded at 1280 px
+  and searched by the object detector in nine overlapping parts, so people at
+  the back of a room are big enough to be sure of (Gary's second run, 30/10/26:
+  half a set of classroom photos found people at scores just over the bar, half
+  did not; faces that far away are below what the face detector can see).
 
 How the file is laid out:
   1. Content-Security-Policy: the browser itself refuses any network call to
@@ -294,7 +299,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.1.1';
+const APP_VERSION = '0.1.2';
 
 // The folders filter knows, in the order they are shown. Photos in "other"
 // stay where they are: nothing is copied for them.
@@ -313,6 +318,9 @@ const config = {
   previewMin: 256,      // use the preview stored inside the JPEG if it is at least this big
   thumbSide: 200,       // long edge of the thumbnails in the review grid
   prefetch: 3,          // photos read and decoded ahead while one is recognised
+  closeSide: 1280,      // the closer look decodes the photo to this long edge
+  closeGrid: 3,         // ... and searches it in closeGrid x closeGrid overlapping parts
+  closeTile: 0.45,      // ... each this share of the photo's width and height
 };
 
 // The rules that turn what the models see into a folder. Each threshold is named
@@ -557,6 +565,16 @@ core.tiles = (w, h, k = 0.6) => {
     { x: 0, y: h - th, w: tw, h: th }, { x: w - tw, y: h - th, w: tw, h: th }];
 };
 
+// An n x n grid of overlapping parts, each k of the photo's width and height,
+// evenly spread from edge to edge. The closer look searches these.
+core.grid = (w, h, n, k) => {
+  const tw = Math.round(w * k), th = Math.round(h * k), out = [];
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    out.push({ x: n > 1 ? Math.round(i * (w - tw) / (n - 1)) : 0, y: n > 1 ? Math.round(j * (h - th) / (n - 1)) : 0, w: tw, h: th });
+  }
+  return out;
+};
+
 // Faces from all the looks, measured against the whole photo (W x H). A face
 // counts if it is confident and big enough; one seen only in a quarter (run.full
 // false) needs more confidence. The count is the most found in any one look, so a
@@ -606,11 +624,14 @@ core.textLike = (d, w, h, rules = RULES.text) => {
 
 // The object detector's boxes, per folder: how many count (confident and big
 // enough), the biggest share of the photo one covers, the best confidence and its
-// label. dets: [{ name, score, w, h }] with w and h in the same units as W and H.
+// label, and the best confidence of any box at all (best), even one that does not
+// count, for the run details. dets: [{ name, score, w, h }] with w and h in the
+// same units as W and H.
 core.objectsFrom = (dets, W, H, rules = RULES, groups = OBJECT_GROUPS) => {
   const out = {};
-  for (const g of Object.keys(groups)) out[g] = { count: 0, area: 0, score: 0, name: null };
+  for (const g of Object.keys(groups)) out[g] = { count: 0, area: 0, score: 0, name: null, best: 0 };
   for (const d of dets) {
+    for (const g of Object.keys(groups)) if (groups[g].includes(d.name)) out[g].best = Math.max(out[g].best, d.score);
     const area = (d.w * d.h) / (W * H);
     if (d.score < rules.objectScore || area < rules.objectArea) continue;
     for (const g of Object.keys(groups)) {
@@ -620,6 +641,21 @@ core.objectsFrom = (dets, W, H, rules = RULES, groups = OBJECT_GROUPS) => {
       o.area = Math.max(o.area, area);
       if (d.score > o.score) { o.score = d.score; o.name = d.name; }
     }
+  }
+  return out;
+};
+
+// Several looks at one photo (objectsFrom results), as one: per folder the most
+// boxes in any one look (overlapping parts must not count a person twice), the
+// biggest box, the best confidence with its label, and the best of any box.
+core.mergeLooks = (looks) => {
+  const out = {};
+  for (const look of looks) for (const g of Object.keys(look)) {
+    const a = look[g], o = out[g] || (out[g] = { count: 0, area: 0, score: 0, name: null, best: 0 });
+    o.count = Math.max(o.count, a.count);
+    o.area = Math.max(o.area, a.area);
+    if (a.score > o.score) { o.score = a.score; o.name = a.name; }
+    o.best = Math.max(o.best, a.best || 0);
   }
   return out;
 };
@@ -663,7 +699,8 @@ core.categorize = (p, rules = RULES, groups = LABEL_GROUPS) => {
     return { category: best.g, reason: best.label.name + ' ' + best.label.score.toFixed(2) + ', ' + best.g + ' ' + best.sum.toFixed(2) };
   }
   const t = top[0];
-  return { category: 'other', reason: 'nothing clear' + (t ? ' (best guess: ' + t.name + ' ' + t.score.toFixed(2) + ')' : '') };
+  const person = ob.people && ob.people.best ? '; best person ' + ob.people.best.toFixed(2) : '';
+  return { category: 'other', reason: 'nothing clear' + (t ? ' (best guess: ' + t.name + ' ' + t.score.toFixed(2) + person + ')' : person ? ' (' + person.slice(2) + ')' : '') };
 };
 
 // Run load(item) up to `depth` items ahead of each(result, i), which sees the
@@ -958,7 +995,8 @@ async function openFolder(h) {
 const recog = {
   promise: null,
   // Test seam: (entry) => { labels: [{ index, name, score }], faces: [{ w, h, score, tile }],
-  // objects: [{ name, score, w, h }] } with sizes as shares of the photo, used instead of the models.
+  // objects: [{ name, score, w, h }], closer: { objects: [...] } } with sizes as shares of
+  // the photo, used instead of the models; closer is what the closer look finds.
   override: null,
   load() {
     if (this.override) return Promise.resolve(null);
@@ -996,8 +1034,22 @@ const recog = {
         runs.push({ full: !!t.full, dets: d.detections.map((x) => ({ w: x.boundingBox.width, h: x.boundingBox.height, score: x.categories[0].score })) });
       } finally { if (img !== bmp) img.close(); }
     }
-    const boxes = objects.detect(bmp).detections.map((x) => ({ name: x.categories[0].categoryName, score: x.categories[0].score, w: x.boundingBox.width, h: x.boundingBox.height }));
-    return { labels, faces: core.facesFrom(runs, bmp.width, bmp.height), objects: core.objectsFrom(boxes, bmp.width, bmp.height) };
+    return { labels, faces: core.facesFrom(runs, bmp.width, bmp.height), objects: core.objectsFrom(this.boxes(objects, bmp), bmp.width, bmp.height) };
+  },
+  boxes(objects, img) {
+    return objects.detect(img).detections.map((x) => ({ name: x.categories[0].categoryName, score: x.categories[0].score, w: x.boundingBox.width, h: x.boundingBox.height }));
+  },
+  // The closer look: the object detector on overlapping parts of a bigger decode.
+  // A part is cut out, not resized, so its boxes measure against the whole photo.
+  async closer(bmp, entry) {
+    if (this.override) return core.objectsFrom(((this.override(entry) || {}).closer || {}).objects || [], 1, 1);
+    const { objects } = await this.load();
+    const looks = [];
+    for (const t of core.grid(bmp.width, bmp.height, config.closeGrid, config.closeTile)) {
+      const img = await createImageBitmap(bmp, t.x, t.y, t.w, t.h);
+      try { looks.push(core.objectsFrom(this.boxes(objects, img), bmp.width, bmp.height)); } finally { img.close(); }
+    }
+    return core.mergeLooks(looks);
   },
 };
 
@@ -1039,7 +1091,7 @@ async function prepare(entry) {
       bmp = await createImageBitmap(file, opts);
     }
     const size = info.width ? core.orientedSize(info.width, info.height, info.orientation) : { w: bmp.width, h: bmp.height };
-    return { entry, info, bmp, preview, size, ms: now() - t0 };
+    return { entry, file, info, bmp, preview, size, ms: now() - t0 };
   } catch (e) {
     return { entry, error: errText(e), ms: now() - t0 };
   }
@@ -1051,6 +1103,16 @@ function textCheck(bmp) {
   const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(bmp, 0, 0, w, h);
   return core.textLike(ctx.getImageData(0, 0, w, h).data, w, h);
+}
+
+// The photo itself, decoded to closeSide for the closer look.
+async function decodeClose(file, info) {
+  const s = info.width ? core.orientedSize(info.width, info.height, info.orientation) : null;
+  const opts = { imageOrientation: 'from-image', resizeQuality: 'medium' };
+  if (!s || Math.max(s.w, s.h) > config.closeSide) {
+    if (!s || s.w >= s.h) opts.resizeWidth = config.closeSide; else opts.resizeHeight = config.closeSide;
+  }
+  return createImageBitmap(file, opts);
 }
 
 async function thumbOf(bmp) {
@@ -1073,7 +1135,7 @@ async function runSort() {
   if (!pick.chosen.length) return;
   clearPlan();
   state.stopRequested = false;
-  const stats = { preview: 0, decode: 0, analyse: 0, failed: 0 };
+  const stats = { preview: 0, decode: 0, analyse: 0, failed: 0, closer: 0 };
   const tally = Object.fromEntries(CATEGORIES.map((c) => [c, 0]));
   const total = pick.chosen.length;
   $('#run-count').textContent = '0 / ' + total;
@@ -1100,8 +1162,18 @@ async function runSort() {
       try {
         const r = await recog.analyse(p.bmp, p.entry);
         const text = textCheck(p.bmp);
-        const c = core.categorize({ name: p.entry.name, format: p.info.format, make: p.info.make,
-          width: p.size.w, height: p.size.h, faces: r.faces, objects: r.objects, labels: r.labels, text: text.isText });
+        const facts = { name: p.entry.name, format: p.info.format, make: p.info.make,
+          width: p.size.w, height: p.size.h, faces: r.faces, objects: r.objects, labels: r.labels, text: text.isText };
+        let c = core.categorize(facts);
+        if (c.category !== 'people' && c.category !== 'screenshots') {
+          // A closer look: the same rules, with what the object detector finds in a bigger decode added.
+          const big = await decodeClose(p.file, p.info);
+          let near;
+          try { near = await recog.closer(big, p.entry); } finally { big.close(); }
+          stats.closer++;
+          const c2 = core.categorize({ ...facts, objects: core.mergeLooks([r.objects, near]) });
+          c = c2.category === c.category ? c2 : { category: c2.category, reason: c2.reason + ' (closer look)' };
+        }
         item.category = c.category;
         item.reason = c.reason;
         item.thumb = await thumbOf(p.bmp);
@@ -1127,7 +1199,7 @@ async function runSort() {
   state.lastRun = {
     photos: done, chosen: total,
     perPhotoMs: done ? (now() - t0) / done : 0,
-    previewUsed: stats.preview, decodeMs: done ? stats.decode / done : 0, analyseMs: done ? stats.analyse / done : 0, failed: stats.failed,
+    previewUsed: stats.preview, closer: stats.closer, decodeMs: done ? stats.decode / done : 0, analyseMs: done ? stats.analyse / done : 0, failed: stats.failed,
   };
   renderReview();
   show('review');
@@ -1281,7 +1353,7 @@ function showDone(out, logName, logError, ms, total) {
 function runDetails() {
   const r = state.lastRun || {};
   const head = 'filter v' + APP_VERSION + ' run ' + fmtDate(Date.now()) + ' ' + fmtTime(Date.now()) + ', ' + state.plan.length + ' photos, ' +
-    fmtS(r.perPhotoMs || 0) + ' per photo, preview used for ' + (r.previewUsed || 0);
+    fmtS(r.perPhotoMs || 0) + ' per photo, preview used for ' + (r.previewUsed || 0) + ', closer look for ' + (r.closer || 0);
   return [head].concat(state.plan.map((p) => p.name + ' ▸ ' + p.category + (p.category !== p.first ? ' (filter said ' + p.first + ')' : '') + ': ' + p.reason)).join('\n');
 }
 

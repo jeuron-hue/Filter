@@ -177,9 +177,11 @@ function pageFixtures() {
         await this.put(cam, name, await this.withExif(pic));
         A[name] = answer;
       };
-      // Like Gary's classroom photo (30/10/26): small people, faces turned away, a room of tables.
+      // Like Gary's classroom photos (30/10/26): small people, faces turned away, a room of tables.
+      // On the small preview one person is barely seen; the closer look finds three.
       await photo('PXL_20261029_101000000.jpg', 0, { labels: [{ index: 762, name: 'restaurant', score: 0.5 }],
-        objects: [0.1, 0.4, 0.7].map((x) => ({ name: 'person', score: 0.7, w: 0.15, h: 0.3, x })) });
+        objects: [{ name: 'person', score: 0.45, w: 0.1, h: 0.2 }],
+        closer: { objects: [0.1, 0.4, 0.7].map((x) => ({ name: 'person', score: 0.7, w: 0.15, h: 0.3, x })) } });
       await photo('PXL_20261029_100900000.jpg', 1, { labels: [{ index: 207, name: 'golden retriever', score: 0.4 }, { index: 208, name: 'Labrador retriever', score: 0.2 }] });
       await photo('PXL_20261029_100800000.jpg', 2, { labels: [{ index: 963, name: 'pizza', score: 0.7 }] });
       await photo('PXL_20261029_100700000.jpg', 3, { labels: [{ index: 978, name: 'seashore', score: 0.3 }, { index: 975, name: 'lakeside', score: 0.1 }] });
@@ -588,11 +590,35 @@ test('objectsFrom: boxes per folder, confident and big enough, biggest and best 
     return c.objectsFrom([d('person', 0.9, 100, 200), d('person', 0.5, 50, 80), d('person', 0.49, 300, 300), d('person', 0.95, 20, 19),
       d('dog', 0.7, 150, 150), d('cat', 0.8, 60, 60), d('pizza', 0.65, 100, 100), d('laptop', 0.99, 300, 200), d('bowl', 0.9, 200, 200)], 500, 400);
   });
-  eq(r.people, { count: 2, area: 0.1, score: 0.9, name: 'person' }, 'people: two count (one unsure, one too small)');
-  eq(r.pets, { count: 2, area: 0.1125, score: 0.8, name: 'cat' }, 'pets: best is the cat, biggest the dog');
-  eq(r.food, { count: 1, area: 0.05, score: 0.65, name: 'pizza' }, 'food: a bowl is not food');
+  eq(r.people, { count: 2, area: 0.1, score: 0.9, name: 'person', best: 0.95 }, 'people: two count (one unsure, one too small); best of any box 0.95');
+  eq(r.pets, { count: 2, area: 0.1125, score: 0.8, name: 'cat', best: 0.8 }, 'pets: best is the cat, biggest the dog');
+  eq(r.food, { count: 1, area: 0.05, score: 0.65, name: 'pizza', best: 0.65 }, 'food: a bowl is not food');
   await ctx.close();
 }, { core: true });
+
+test('grid and mergeLooks: nine overlapping parts edge to edge; looks merged without counting twice', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const c = window.filter.core;
+    const o = (count, area, score, name, best) => ({ people: { count, area, score, name, best } });
+    return {
+      g: c.grid(1000, 800, 3, 0.45), one: c.grid(100, 80, 1, 1),
+      m: c.mergeLooks([o(1, 0.05, 0.9, 'person', 0.9), o(3, 0.02, 0.6, 'person', 0.95), o(0, 0, 0, null, 0.4)]),
+      pets: c.mergeLooks([{ pets: { count: 0, area: 0, score: 0, name: null, best: 0.3 } }, { pets: { count: 1, area: 0.2, score: 0.7, name: 'dog', best: 0.7 } }]).pets,
+    };
+  });
+  eq(r.g.length, 9, 'nine parts');
+  eq(r.g[0], { x: 0, y: 0, w: 450, h: 360 }, 'first part at the top left');
+  eq(r.g[4], { x: 275, y: 220, w: 450, h: 360 }, 'middle part centred');
+  eq(r.g[8], { x: 550, y: 440, w: 450, h: 360 }, 'last part reaches the bottom right edge');
+  eq(r.g.map((t) => t.x).slice(0, 3), [0, 275, 550], 'columns evenly spread');
+  eq(r.one, [{ x: 0, y: 0, w: 100, h: 80 }], 'a 1 x 1 grid is the whole photo');
+  eq(r.m.people, { count: 3, area: 0.05, score: 0.9, name: 'person', best: 0.95 }, 'merged: most in one look, biggest, best');
+  eq(r.pets, { count: 1, area: 0.2, score: 0.7, name: 'dog', best: 0.7 }, 'merged pets');
+  await ctx.close();
+}, { core: true });
+
+
 
 test('textLike: a page of text yes; plain, colourful, noisy and chequered pictures no', async () => {
   const { ctx, page } = await newApp();
@@ -667,6 +693,8 @@ test('categorize: the rules in order, each threshold at its edge', async () => {
       cakeSeen: { ...base, objects: { food: { count: 1, area: 0.2, score: 0.7, name: 'cake' } } },
       petsBeforeFood: { ...base, objects: { pets: { count: 1, area: 0.1, score: 0.7, name: 'cat' }, food: { count: 1, area: 0.4, score: 0.9, name: 'pizza' } } },
       restaurant: { ...base, labels: [L(762, 'restaurant', 0.6), L(567, 'frying pan', 0.2), L(909, 'wok', 0.2)] },
+      weakPerson: { ...base, labels: [L(526, 'desk', 0.16)], objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.41 } } },
+      weakPersonOnly: { ...base, objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.38 } } },
     };
     return Object.fromEntries(Object.entries(cases).map(([k, v]) => [k, c.categorize(v)]));
   });
@@ -693,6 +721,8 @@ test('categorize: the rules in order, each threshold at its edge', async () => {
   eq([cat('dogSmall'), cat('dogUnsure')], ['other', 'other'], 'a dog too small or too unsure');
   eq([cat('cakeSeen'), cat('petsBeforeFood')], ['food', 'pets'], 'seen food; pets before food');
   eq(cat('restaurant'), 'other', 'a restaurant, a frying pan or a wok is not food');
+  eq(r.weakPerson.reason, 'nothing clear (best guess: desk 0.16; best person 0.41)', 'other shows the best person score');
+  eq(r.weakPersonOnly.reason, 'nothing clear (best person 0.38)', 'with no labels too');
   await ctx.close();
 }, { core: true });
 
@@ -864,7 +894,16 @@ test('setup: picking the camera folder lists it and counts what is new', async (
 test('run and review: each photo lands in the right folder, grid per folder, other stays', async () => {
   const { ctx, page } = await newApp();
   await openCamera(page);
+  await page.evaluate(() => {
+    window.__calls = {};
+    window.filter.recog.override = (e) => { window.__calls[e.name] = (window.__calls[e.name] || 0) + 1; return window.__answers[e.name] || {}; };
+  });
   await sort(page);
+  const calls = await page.evaluate(() => [window.__calls, window.filter.state.lastRun.closer]);
+  const twice = Object.keys(calls[0]).filter((n) => calls[0][n] === 2).sort();
+  eq(twice, ['PXL_20250101_120000000.jpg', 'PXL_20261029_100500000.jpg', 'PXL_20261029_100600000.jpg', 'PXL_20261029_100700000.jpg',
+    'PXL_20261029_100800000.jpg', 'PXL_20261029_100900000.jpg', 'PXL_20261029_101000000.jpg'], 'closer look for everything not already people or a screenshot');
+  eq([calls[0]['PXL_20261029_100200000.jpg'], calls[0]['Screenshot_20261029-100400.png'], calls[0]['IMG_20261029_100300.png'], calls[1]], [1, 1, 1, 7], 'faces and screenshots skip it');
   eq(await screen(page), 'review', 'screen');
   eq(sortPlan(await plan(page)), sortPlan(EXPECTED_PLAN), 'plan');
   const r = await page.evaluate(() => ({
@@ -882,7 +921,7 @@ test('run and review: each photo lands in the right folder, grid per folder, oth
   eq(r.reasons['PXL_20261029_100900000.jpg'], 'golden retriever 0.40, pets 0.60', 'reason kept for the sheet');
   eq(r.reasons['IMG_20261029_100300.png'], 'screen-sized picture with no camera data', 'screenshot by shape');
   eq(r.reasons['PXL_20261029_100600000.jpg'], 'mostly text', 'text page found by the real text check');
-  eq(r.reasons['PXL_20261029_101000000.jpg'], '3 people, 0.70', 'the classroom: people from the person boxes, not food from "restaurant"');
+  eq(r.reasons['PXL_20261029_101000000.jpg'], '3 people, 0.70 (closer look)', 'the classroom: people found by the closer look, not food from "restaurant"');
   eq(r.reasons['PXL_20261029_100500000.jpg'], 'nothing clear (best guess: hook 0.12)', 'the hand close-up: a quarter-only face at 0.80 is not enough');
   eq(r.reasons['PXL_20250101_120000000.jpg'], 'cat 0.80 (seen)', 'a cat box');
   eq(r.overflow, false, 'no sideways scroll');
@@ -958,7 +997,8 @@ test('copy: every copy lands in its folder byte-identical, originals untouched, 
   assert(new RegExp('^filter v' + VERSION.replace(/\./g, '\\.') + ' run \\d\\d/\\d\\d/\\d\\d \\d{4} hrs, 10 photos, ').test(lines[0]), 'details header: ' + lines[0]);
   eq(lines.length, 11, 'a line per photo');
   assert(lines.includes('PXL_20261029_100900000.jpg ▸ other (filter said pets): golden retriever 0.40, pets 0.60'), 'changed photo line');
-  assert(lines.includes('PXL_20261029_101000000.jpg ▸ people: 3 people, 0.70'), 'classroom line');
+  assert(lines.includes('PXL_20261029_101000000.jpg ▸ people: 3 people, 0.70 (closer look)'), 'classroom line');
+  assert(/, closer look for 7$/.test(lines[0]), 'closer look count in the header: ' + lines[0]);
   eq(await text(page, '#details-text'), clip, 'the same text on screen');
   assert(page.errors.length === 0, page.errors.join('; '));
   await ctx.close();
@@ -1011,8 +1051,8 @@ test('stop during recognition goes to review with the photos done so far', async
   await page.evaluate(() => { window.filter.config.prefetch = 1; });
   await openCamera(page);
   await page.evaluate(() => {
-    let n = 0;
-    window.filter.recog.override = (e) => { if (++n === 3) window.filter.state.stopRequested = true; return window.__answers[e.name] || {}; };
+    const seen = new Set();   // photos, not calls: the closer look asks the models again about the same photo
+    window.filter.recog.override = (e) => { seen.add(e.name); if (seen.size === 3) window.filter.state.stopRequested = true; return window.__answers[e.name] || {}; };
   });
   await sort(page);
   eq(await screen(page), 'review', 'screen');
