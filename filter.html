@@ -1,18 +1,18 @@
 <!doctype html>
 <!--
-filter: sorts the photos and videos on Gary's phone into folders. Installed as a
-PWA. Everything runs on the phone.
+filter: sorts the photos and videos on Gary's phone into folders by what is in
+them. Installed as a PWA. Everything runs on the phone; nothing is uploaded.
 
-This build is phase F0, the probe. It sorts nothing. It answers four questions
-about what Chrome on the Pixel allows, before any real feature is built:
-  1. Can it open DCIM/Camera and read a batch of 500 entries? How fast? Does it stall?
-  2. Does the safe move work: copy, read back, compare size and SHA-256, then delete?
-     Run only on test files the probe makes itself, never on real photos or videos.
-     A forced mismatch must stop and keep the original.
-  3. After the app is closed and reopened, can it get back to the folder without asking?
-  4. How long does recognition take per photo on the phone (MediaPipe image classifier)?
+This build is phase F1: photos, by description (the fixed list), Review mode,
+copy only. Pick a folder (DCIM/Camera), choose how many of the newest photos to
+sort, filter recognises each one and shows its plan as a grid per folder, Gary
+moves any picture to another folder, then one tap copies them. Copies go into
+subfolders of the picked folder (people, pets, food, screenshots, documents,
+scenery); photos in "other" stay where they are and are not copied. Every copy
+is read back and checked byte for byte (size and SHA-256). F1 never deletes or
+overwrites anything. Each run writes a log to filter-logs/ in the picked folder.
 
-APP_VERSION 0.0.2 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.1.0 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -26,26 +26,31 @@ change the version here in the same commit as the file.
   vendor/mediapipe/vision_wasm_internal.js     @mediapipe/tasks-vision 0.10.35, wasm/, Apache-2.0, copied from retouch, sha256 e7fd9858e8e8f221d9b96eddc11f8e077f263e0b7bbd79d3cbe882b134274f8c
   vendor/mediapipe/vision_wasm_internal.wasm   @mediapipe/tasks-vision 0.10.35, wasm/, Apache-2.0, copied from retouch, sha256 6a5c64584c2ab61c763b6e204afbdbc7ce1caf7f5216187322bca8df94f646bc
   vendor/mediapipe/efficientnet_lite0.tflite   MediaPipe image classifier EfficientNet-Lite0, float32, version 1 (the store's "latest" is the same file), 224 x 224 input, 1000 ImageNet classes, labels inside the model, 18.6 MB, from the MediaPipe model store (image_classifier/efficientnet_lite0/float32/1), downloaded 29/10/26, Apache-2.0 (stated in the model's own metadata and by its publisher, the TensorFlow TPU repository), sha256 6c7ab0a6e5dcbf38a8c33b960996a55a3b4300b36a018c4545801de3a3c8bde0
-  vendor/mediapipe/LICENSE-apache-2.0.txt      Apache License 2.0 text from apache.org, copied from retouch, covers the four files above, sha256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
+  vendor/mediapipe/blaze_face_short_range.tflite  MediaPipe face detector BlazeFace short range, float16, version 1 (the store's "latest" is the same file), 128 x 128 input, 230 kB, from the MediaPipe model store (face_detector/blaze_face_short_range/float16/1), downloaded 30/10/26, Apache-2.0 (model card dated 09/06/21), sha256 b4578f35940bf5a1a655214a1cce5cab13eba73c1297cd78e1a04c2380b0152f
+  vendor/mediapipe/LICENSE-apache-2.0.txt      Apache License 2.0 text from apache.org, copied from retouch, covers the five files above, sha256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
   MediaPipe notes: the same pin as retouch. Only the SIMD build is vendored (Chrome
   on Android has had wasm SIMD since version 91). Why 0.10.35 and not 1.x: from 1.0
   the bundle carries a usage logger that posts to a Google logging server.
   filter_checks.cjs looks for it. No MediaPipe model card exists for EfficientNet-Lite0
-  (the store's card collection covers Google's own MediaPipe models only); the licence
-  was checked in the model metadata and the upstream repository instead.
+  (the store's card collection covers Google's own MediaPipe models only); its licence
+  was checked in the model metadata and the upstream repository instead. The face
+  model card says it finds faces at least about 20 % of the picture's side, within
+  about 2 m; filter also runs it on four overlapping quarters of each photo so
+  faces down to about half that size are found.
 
 How the file is laid out:
   1. Content-Security-Policy: the browser itself refuses any network call to
      another origin (connect-src 'self'), so photos cannot leave the phone.
-  2. CSS: darkroom tokens (the same as retouch), then the probe's layout.
-  3. HTML: a status strip, the title frame, one card per question, and the
-     bottom bar with "copy results".
+  2. CSS: darkroom tokens (the same as retouch), then the screens.
+  3. HTML: a status strip, one section per screen (start, setup, run, review,
+     copy, done), the bottom bar, and the sheet for sending a photo elsewhere.
   4. Script:
-     a. Settings.
-     b. CORE: the pure folder-reading and file-safety functions (sorting names
-        into kinds, reading a folder in batches with a stall timer, SHA-256,
-        and the safe move). Tests and the mutation runner target this block.
-     c. Probe: the four tests, the results store, copy results, service worker.
+     a. Settings and the recognition rules.
+     b. CORE: pure functions: reading a folder in batches, choosing the newest
+        photos, reading a photo's header (size, camera, orientation, preview),
+        the sorting rules, and the safe copy. Tests and the mutation runner
+        target this block.
+     c. App: models, the screens, the run, the copy, the log, service worker.
 -->
 <html lang="en">
 <head>
@@ -93,128 +98,184 @@ button{font:inherit;color:inherit;cursor:pointer;min-height:var(--tap);min-width
 button:disabled{cursor:default;opacity:.35}
 .btn{border:1px solid var(--line-strong);background:transparent;color:var(--ink);border-radius:4px;padding:0 16px;font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase}
 .btn-primary{background:var(--amber);border-color:var(--amber);color:var(--on-amber)}
+.btn-big{min-height:56px;font-size:15px;letter-spacing:.16em}
 
 /* Status strip: thin, at the top. */
 .strip{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;min-height:34px;padding:4px 16px;padding-top:max(4px,env(safe-area-inset-top));background:var(--chrome);border-bottom:1px solid var(--line)}
 .strip .status{margin-left:auto;text-align:right;color:var(--muted);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .strip .status.busy{color:var(--amber)}
 
-main{flex:1;display:flex;flex-direction:column;gap:12px;padding:16px 12px 24px}
+main{flex:1;display:flex;flex-direction:column}
+.screen{flex:1;display:none;flex-direction:column;gap:12px;padding:16px 12px 24px}
+body[data-screen="start"] .screen[data-screen="start"],body[data-screen="setup"] .screen[data-screen="setup"],
+body[data-screen="run"] .screen[data-screen="run"],body[data-screen="review"] .screen[data-screen="review"],
+body[data-screen="copy"] .screen[data-screen="copy"],body[data-screen="done"] .screen[data-screen="done"]{display:flex}
 
-/* Title frame with crop-mark corners. */
-.marks{position:relative;align-self:center;width:100%;max-width:340px;padding:28px 24px;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
-.marks i{position:absolute;width:22px;height:22px;border:0 solid var(--ink)}
+/* Start: frame marks, one amber button. */
+.screen[data-screen="start"]{justify-content:center;align-items:center;gap:28px;padding:24px 32px}
+.marks{position:relative;width:248px;max-width:100%;aspect-ratio:4/5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;max-height:44dvh}
+.marks i{position:absolute;width:26px;height:26px;border:0 solid var(--ink)}
 .marks i:nth-child(1){top:0;left:0;border-top-width:2px;border-left-width:2px}
 .marks i:nth-child(2){top:0;right:0;border-top-width:2px;border-right-width:2px}
 .marks i:nth-child(3){bottom:0;left:0;border-bottom-width:2px;border-left-width:2px}
 .marks i:nth-child(4){bottom:0;right:0;border-bottom-width:2px;border-right-width:2px}
-.marks h1{margin:0;font-size:40px;line-height:44px;font-weight:600;letter-spacing:.01em}
-.marks p{margin:0;color:var(--muted);max-width:250px}
+.marks h1{margin:0;font-size:44px;line-height:48px;font-weight:600;letter-spacing:.01em}
+.marks p{margin:0;max-width:190px;text-align:center;color:var(--muted)}
+.actions-col{width:100%;max-width:380px;display:flex;flex-direction:column;gap:12px}
+.note{margin:0;font-size:13px;line-height:18px;color:var(--ink-2);background:var(--amber-deep);border-radius:4px;padding:8px 12px}
+.note:empty{display:none}
 
-/* One card per question. */
+/* Cards and figure rows. */
 .card{background:var(--chrome);border:1px solid var(--line);border-radius:6px;padding:12px 14px 14px;display:flex;flex-direction:column;gap:10px}
 .card-head{display:flex;align-items:baseline;gap:10px}
 .card-head h2{flex:1;margin:0;font-size:14px;line-height:20px;font-weight:600;letter-spacing:.14em;text-transform:uppercase}
-.verdict{font-family:var(--font-mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
-.verdict.pass{color:var(--pass)} .verdict.watch{color:var(--watch)} .verdict.fail{color:var(--fail)}
 .cap{margin:0;font-size:13px;line-height:18px;color:var(--muted)}
-.actions{display:flex;flex-wrap:wrap;gap:8px}
-.actions .btn{flex:1 1 auto}
-
-/* Result rows: a label in spaced capitals, the figure in mono. */
 .rows{display:flex;flex-direction:column}
 .rows:empty{display:none}
 .r{display:flex;gap:12px;padding:7px 0;border-top:1px solid var(--line)}
-.r .k{flex:0 0 92px;font-size:10.5px;line-height:17px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
-.r .v{flex:1;min-width:0;font-family:var(--font-mono);font-variant-ligatures:none;font-variant-numeric:tabular-nums;font-size:12.5px;line-height:17px;color:var(--ink);overflow-wrap:anywhere;user-select:text}
+.r .k{flex:0 0 112px;font-size:10.5px;line-height:17px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+.r .v{flex:1;min-width:0;font-family:var(--font-mono);font-variant-ligatures:none;font-variant-numeric:tabular-nums;font-size:12.5px;line-height:17px;color:var(--ink);overflow-wrap:anywhere}
 .r .v.pass{color:var(--pass)} .r .v.watch{color:var(--watch)} .r .v.fail{color:var(--fail)}
+.field{display:flex;align-items:center;gap:12px;min-height:var(--tap)}
+.field label{flex:1;font-size:12px;line-height:16px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-strong);border-radius:4px;background:var(--stage);color:var(--ink);padding:0 10px;font:14px var(--font-mono);text-align:right}
 
-/* The whole report as text, for copying by hand if the clipboard refuses. */
-details{background:var(--chrome);border:1px solid var(--line);border-radius:6px;padding:0 14px}
-summary{min-height:var(--tap);display:flex;align-items:center;font-size:12px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);cursor:pointer}
-pre{margin:0 0 14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/17px var(--font-mono);color:var(--ink-2);user-select:text}
+/* Progress: a big count and a hairline bar. */
+.count{font-family:var(--font-mono);font-size:40px;line-height:48px;font-weight:500;color:var(--ink);text-align:center;margin:12px 0 0}
+.bar-track{height:4px;background:var(--line-strong);border-radius:2px;overflow:hidden}
+.bar-fill{height:100%;width:0;background:var(--amber);transition:width .2s}
+.tally{display:flex;flex-wrap:wrap;gap:6px 14px;justify-content:center;text-align:center}
 
-/* Bottom bar: sprockets along the film edge, copy results. */
+/* Review: a grid per proposed folder. */
+.group{display:flex;flex-direction:column;gap:8px}
+.group-head{display:flex;align-items:baseline;gap:10px;padding:4px 2px 0}
+.group-head .note-stay{color:var(--faint)}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+.ph{position:relative;aspect-ratio:1;padding:0;border:0;border-radius:2px;overflow:hidden;background:var(--raised);min-width:0;min-height:0}
+.ph img{width:100%;height:100%;object-fit:cover;display:block}
+.ph.changed{outline:2px solid var(--amber);outline-offset:-2px}
+.ph .bad{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:10px var(--font-mono);color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
+
+/* Bottom bar: sprockets along the film edge, the one amber action. */
 .bar{position:sticky;bottom:0;z-index:5;background:var(--chrome);border-top:1px solid var(--line);padding:0 12px max(10px,env(safe-area-inset-bottom))}
 .sprockets{height:12px;margin:0 -2px;background-image:repeating-linear-gradient(90deg,transparent 0 7px,var(--stage) 7px 16px);background-size:100% 5px;background-position:center;background-repeat:no-repeat}
-.bar-row{display:flex;align-items:center;gap:8px}
-.bar-row .edge{flex:1;min-width:0}
-.bar-row .btn-primary{min-height:48px;padding:0 20px}
+.bar-row{display:flex;align-items:center;gap:8px;min-height:48px}
+.bar-row .edge{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar-row .btn{min-height:48px}
 
-.notice{position:fixed;left:12px;right:12px;bottom:calc(90px + env(safe-area-inset-bottom));z-index:6;display:flex;align-items:center;gap:8px;background:var(--chrome);border:1px solid var(--line-strong);border-radius:4px;padding:0 0 0 12px;font-size:14px;line-height:19px;color:var(--ink-2)}
+/* Sheet: send one photo to another folder. */
+.veil{position:fixed;inset:0;z-index:7;background:rgba(11,11,11,.72)}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:8;background:var(--chrome);border-top:1px solid var(--line);border-radius:10px 10px 0 0;padding:12px 16px max(16px,env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:10px;max-height:86dvh;overflow-y:auto}
+.sheet-photo{display:flex;gap:12px;align-items:center}
+.sheet-photo img{width:96px;height:96px;object-fit:cover;border-radius:2px;background:var(--raised);flex:0 0 auto}
+.sheet-photo .meta{min-width:0;display:flex;flex-direction:column;gap:4px}
+.sheet-photo .name{font:12px/16px var(--font-mono);color:var(--ink-2);overflow-wrap:anywhere}
+.sheet-photo .why{font-size:13px;line-height:18px;color:var(--muted)}
+.targets{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.targets button{min-height:48px;border:1px solid var(--line);background:var(--raised);color:var(--ink-2);border-radius:4px;font-size:12px;font-weight:600;letter-spacing:.12em;text-transform:uppercase}
+.targets button[aria-pressed="true"]{border-color:var(--amber);color:var(--amber);background:var(--amber-deep)}
+
+.notice{position:fixed;left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom));z-index:6;display:flex;align-items:center;gap:8px;background:var(--chrome);border:1px solid var(--line-strong);border-radius:4px;padding:0 0 0 12px;font-size:14px;line-height:19px;color:var(--ink-2)}
 .notice .text{flex:1;padding:10px 0}
 .notice .btn-primary{min-height:36px;margin:4px 0}
 .notice .close{border:0;background:transparent;color:var(--muted);font-size:22px}
 </style>
 </head>
-<body>
+<body data-screen="start">
 
 <header class="strip">
-  <span class="edge">filter ▸ F0 probe</span>
+  <span class="edge" id="strip-left">filter</span>
   <span class="edge status" id="status" aria-live="polite"></span>
 </header>
 
 <main>
-  <div class="marks">
-    <i></i><i></i><i></i><i></i>
-    <svg width="56" height="56" viewBox="0 0 64 64" aria-hidden="true"><path d="M10 14h44L37 34v14l-10 6V34z" fill="none" stroke="#F2A33A" stroke-width="2.5" stroke-linejoin="round"/><path d="M10 14h44L44 24H20z" fill="#F2A33A"/></svg>
-    <h1>filter</h1>
-    <p>F0 probe. Tests what this phone allows. Nothing is uploaded, and no photo or video is moved.</p>
-  </div>
-
-  <section class="card" id="card-device">
-    <div class="card-head"><span class="edge">00</span><h2>This phone</h2></div>
-    <div class="rows" id="rows-device"></div>
-    <button class="btn" id="btn-install" hidden>Install app</button>
-  </section>
-
-  <section class="card" id="card-folder">
-    <div class="card-head"><span class="edge">01</span><h2>Folder</h2><span class="verdict" id="verdict-folder"></span></div>
-    <p class="cap">Pick DCIM, then Camera. Reads the first 500 entries, names only. Count all reads the whole folder in batches of 500.</p>
-    <div class="actions">
-      <button class="btn btn-primary" id="btn-pick">Pick folder</button>
-      <button class="btn" id="btn-read" disabled>Read 500</button>
-      <button class="btn" id="btn-count" disabled>Count all</button>
-      <button class="btn" id="btn-stop" hidden>Stop</button>
+  <!-- Start: pick a folder, or allow access to the one picked before. -->
+  <section class="screen" data-screen="start">
+    <div class="marks">
+      <i></i><i></i><i></i><i></i>
+      <svg width="64" height="64" viewBox="0 0 64 64" aria-hidden="true"><path d="M10 14h44L37 34v14l-10 6V34z" fill="none" stroke="#F2A33A" stroke-width="2.5" stroke-linejoin="round"/><path d="M10 14h44L44 24H20z" fill="#F2A33A"/></svg>
+      <h1>filter</h1>
+      <p>Sorts photos into folders by what is in them. Nothing leaves this phone.</p>
     </div>
-    <div class="rows" id="rows-folder"></div>
+    <div class="actions-col">
+      <p class="note" id="start-note"></p>
+      <button class="btn btn-primary btn-big" id="btn-allow" hidden>Allow access</button>
+      <button class="btn btn-primary btn-big" id="btn-pick">Pick a folder</button>
+      <button class="btn" id="btn-install" hidden>Install app</button>
+    </div>
   </section>
 
-  <section class="card" id="card-move">
-    <div class="card-head"><span class="edge">02</span><h2>Safe move</h2><span class="verdict" id="verdict-move"></span></div>
-    <p class="cap">Makes its own test picture, moves it into a new subfolder the safe way, then forces a bad copy to show the original is kept. Cleans up after, including anything left by an earlier run that was cut off. Your photos are not touched. In a big folder this takes a minute or more: keep the app open until the card says pass or fail.</p>
-    <div class="actions"><button class="btn" id="btn-move" disabled>Run safe move test</button></div>
-    <div class="rows" id="rows-move"></div>
+  <!-- Setup: what is in the folder, and how many photos to sort. -->
+  <section class="screen" data-screen="setup">
+    <div class="card">
+      <div class="card-head"><span class="edge">Folder</span><h2 id="setup-name"></h2></div>
+      <div class="rows" id="setup-rows"></div>
+      <div class="field">
+        <label for="newest">Newest photos to sort</label>
+        <input type="number" id="newest" min="1" max="2000" step="1" value="200" inputmode="numeric">
+      </div>
+      <p class="cap">Copies go into subfolders here: people, pets, food, screenshots, documents, scenery. Photos in "other" stay where they are. Nothing is moved or deleted.</p>
+      <p class="note" id="setup-note"></p>
+    </div>
+    <div class="actions-col" style="align-self:center">
+      <button class="btn btn-primary btn-big" id="btn-sort" disabled>Sort photos</button>
+      <button class="btn" id="btn-change">Pick another folder</button>
+    </div>
   </section>
 
-  <section class="card" id="card-reopen">
-    <div class="card-head"><span class="edge">03</span><h2>Reopen</h2><span class="verdict" id="verdict-reopen"></span></div>
-    <p class="cap">After picking a folder, close the app fully (swipe it away from recent apps), open it again and come back here. Each opening is checked by itself.</p>
-    <div class="actions"><button class="btn" id="btn-ask" hidden>Ask for the folder again</button></div>
-    <div class="rows" id="rows-reopen"></div>
+  <!-- Run: recognising each photo. -->
+  <section class="screen" data-screen="run">
+    <p class="count" id="run-count">0 / 0</p>
+    <div class="bar-track"><div class="bar-fill" id="run-fill"></div></div>
+    <div class="tally edge" id="run-tally"></div>
+    <p class="cap" id="run-cap" style="text-align:center"></p>
+    <button class="btn" id="btn-stop-run" style="align-self:center">Stop and review</button>
   </section>
 
-  <section class="card" id="card-recog">
-    <div class="card-head"><span class="edge">04</span><h2>Recognition</h2><span class="verdict" id="verdict-recog"></span></div>
-    <p class="cap">Times the image classifier on 5 photos from the folder, read where they are. Runs on the processor (CPU), then on the graphics chip (GPU).</p>
-    <div class="actions"><button class="btn" id="btn-recog" disabled>Time 5 photos</button></div>
-    <div class="rows" id="rows-recog"></div>
+  <!-- Review: the plan, a grid per proposed folder. -->
+  <section class="screen" data-screen="review">
+    <p class="cap">Tap a photo to send it to another folder. Nothing is copied until you tap Copy.</p>
+    <div id="groups" style="display:flex;flex-direction:column;gap:18px"></div>
   </section>
 
-  <details>
-    <summary>Results as text</summary>
-    <pre id="report"></pre>
-  </details>
+  <!-- Copy: each copy is read back and checked. -->
+  <section class="screen" data-screen="copy">
+    <p class="count" id="copy-count">0 / 0</p>
+    <div class="bar-track"><div class="bar-fill" id="copy-fill"></div></div>
+    <p class="cap" id="copy-cap" style="text-align:center"></p>
+  </section>
+
+  <!-- Done: what was done. -->
+  <section class="screen" data-screen="done">
+    <div class="card">
+      <div class="card-head"><span class="edge" id="done-edge">Run</span><h2 id="done-title">Done</h2></div>
+      <p class="note" id="done-note"></p>
+      <div class="rows" id="done-rows"></div>
+    </div>
+    <div class="actions-col" style="align-self:center">
+      <button class="btn btn-primary btn-big" id="btn-again">Back to the folder</button>
+    </div>
+  </section>
 </main>
 
 <footer class="bar">
   <div class="sprockets" aria-hidden="true"></div>
   <div class="bar-row">
-    <span class="edge" id="edge-date"></span>
-    <button class="btn" id="btn-clear">Clear</button>
-    <button class="btn btn-primary" id="btn-copy">Copy results</button>
+    <span class="edge" id="bar-edge"></span>
+    <button class="btn" id="btn-restart" hidden>Start over</button>
+    <button class="btn btn-primary" id="btn-copy" hidden>Copy</button>
   </div>
 </footer>
+
+<div class="veil" id="veil" hidden></div>
+<div class="sheet" id="sheet" hidden role="dialog" aria-label="Send to another folder">
+  <div class="sheet-photo">
+    <img id="sheet-img" alt="">
+    <div class="meta"><span class="name" id="sheet-name"></span><span class="why" id="sheet-why"></span></div>
+  </div>
+  <div class="targets" id="sheet-targets"></div>
+  <button class="btn" id="sheet-cancel">Cancel</button>
+</div>
 
 <div class="notice" id="notice" hidden><span class="text" id="notice-text"></span><button class="btn btn-primary" id="notice-action" hidden></button><button class="close" id="notice-close" aria-label="Close">×</button></div>
 
@@ -222,36 +283,70 @@ pre{margin:0 0 14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/17px v
 'use strict';
 
 /* ============================================================
-   a. Settings
+   a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.0.2';
+const APP_VERSION = '0.1.0';
 
-// Kept in one object so the tests can shrink them (a smaller test picture, a
-// shorter stall timer). The phone always runs with these values.
+// The folders filter knows, in the order they are shown. Photos in "other"
+// stay where they are: nothing is copied for them.
+const CATEGORIES = ['people', 'pets', 'food', 'screenshots', 'documents', 'scenery', 'other'];
+const STAY = 'other';
+const LOG_FOLDER = 'filter-logs';
+
+// Kept in one object so the tests can change them. The phone runs these values.
 const config = {
-  batch: 500,             // entries read per batch
-  stallMs: 15000,         // no new entry for this long counts as a stall
-  mediaSizeSample: 50,    // photos and videos whose size is read, to time getFile
-  testImageSide: 1024,    // the probe's own test picture: 1024 x 1024 noise, about 3 MB as PNG
-  recogSample: 5,         // photos timed in the recognition test
-  decodeWidth: 512,       // photos are decoded at this width for the classifier (it works at 224)
+  batch: 500,           // entries read per batch when listing a folder
+  stallMs: 15000,       // no new entry for this long counts as a stall
+  newest: 200,          // default number of the newest photos per run
+  maxNewest: 2000,
+  headBytes: 262144,    // the first 256 kB of a photo: its header, camera data and preview
+  analyseSide: 512,     // photos are decoded to this long edge for recognition
+  previewMin: 256,      // use the preview stored inside the JPEG if it is at least this big
+  thumbSide: 200,       // long edge of the thumbnails in the review grid
+  prefetch: 3,          // photos read and decoded ahead while one is recognised
 };
 
-// The only names the probe may create, write or delete. Real photos never match.
-const PROBE_PREFIX = 'filter-probe-';
-const PROBE_FOLDER = 'filter-probe';
+// The rules that turn what the models see into a folder. Each threshold is named
+// here so it can be tuned in one place.
+const RULES = {
+  faceScore: 0.6,       // a face counts from this detection confidence
+  faceSize: 0.08,       // ... and if it is at least this share of the photo's width or height
+  topLabels: 10,        // the classifier's best labels that are added up per folder
+  labelMin: 0.25,       // a folder's added-up score must reach this to win
+  screenRatio: [0.40, 0.50],   // short side / long side of a phone screen (Pixel 9 Pro XL: 0.45)
+  screenLong: 1600,     // ... and a long side of at least this many pixels
+  text: { bright: 0.5, darkMin: 0.02, darkMax: 0.3, satMax: 0.18, edgeMin: 0.04 },
+};
+
+// Classifier labels per folder, as index ranges in the model's 1000 ImageNet
+// labels: [first, last, 'first label', 'last label']. filter_checks.cjs reads
+// the labels inside the model and checks every name.
+const LABEL_GROUPS = {
+  pets: [[1, 1, 'goldfish', 'goldfish'], [151, 268, 'Chihuahua', 'Mexican hairless'], [281, 285, 'tabby', 'Egyptian cat'],
+    [330, 333, 'wood rabbit', 'hamster'], [338, 338, 'guinea pig', 'guinea pig']],
+  food: [[923, 957, 'plate', 'pomegranate'], [959, 969, 'carbonara', 'eggnog'], [809, 809, 'soup bowl', 'soup bowl'],
+    [567, 567, 'frying pan', 'frying pan'], [909, 909, 'wok', 'wok'], [762, 762, 'restaurant', 'restaurant']],
+  documents: [[916, 918, 'web site', 'crossword puzzle'], [921, 922, 'book jacket', 'menu'], [549, 549, 'envelope', 'envelope'],
+    [446, 446, 'binder', 'binder']],
+  scenery: [[970, 980, 'alp', 'volcano'], [449, 449, 'boathouse', 'boathouse'], [460, 460, 'breakwater', 'breakwater'],
+    [536, 536, 'dock', 'dock'], [718, 718, 'pier', 'pier'], [821, 821, 'steel arch bridge', 'steel arch bridge'],
+    [839, 839, 'suspension bridge', 'suspension bridge'], [888, 888, 'viaduct', 'viaduct'], [483, 483, 'castle', 'castle'],
+    [698, 698, 'palace', 'palace'], [663, 663, 'monastery', 'monastery'], [668, 668, 'mosque', 'mosque'],
+    [497, 497, 'church', 'church'], [832, 832, 'stupa', 'stupa'], [649, 649, 'megalith', 'megalith'], [525, 525, 'dam', 'dam'],
+    [562, 562, 'fountain', 'fountain'], [437, 437, 'beacon', 'beacon'], [500, 500, 'cliff dwelling', 'cliff dwelling']],
+};
 
 const MP = {
   loader: 'vendor/mediapipe/vision_wasm_internal.js',
   wasm: 'vendor/mediapipe/vision_wasm_internal.wasm',
-  model: 'vendor/mediapipe/efficientnet_lite0.tflite',
+  classifier: 'vendor/mediapipe/efficientnet_lite0.tflite',
+  faces: 'vendor/mediapipe/blaze_face_short_range.tflite',
 };
 
 /* ============================================================
-   b. CORE: folder reading and file safety
-   Pure functions over the File System Access handles. The tests drive
-   them with a fake folder tree; the mutation runner plants bugs in them.
+   b. CORE: pure functions. The tests drive them directly; the
+   mutation runner plants bugs in them.
    ============================================================ */
 
 // CORE:BEGIN
@@ -315,40 +410,260 @@ core.exists = async (dir, name) => {
   }
 };
 
-// The safe move. Android gives a web app no real move, so a move is a copy and a delete:
-//   1. read the original, note its size and SHA-256
-//   2. refuse if the target folder already has that name (never overwrite)
+// When a photo was taken, from its name: "YYYYMMDDhhmmss", or null. Pixel names
+// look like PXL_20261029_101500123.jpg, screenshots Screenshot_20261029-101500.png.
+// Reading the date from the name needs no file access, which is slow on the phone.
+core.dateKey = (name) => {
+  const m = /(20\d\d)(\d\d)(\d\d)[_-]?(\d\d)(\d\d)(\d\d)/.exec(name);
+  if (!m || +m[2] < 1 || +m[2] > 12 || +m[3] < 1 || +m[3] > 31) return null;
+  return m.slice(1).join('');
+};
+
+// The newest n photos not yet sorted. `sorted` holds the names already in
+// filter's folders. Photos without a date in their name come after the rest.
+core.pickNewest = (photos, sorted, n) => {
+  const fresh = photos.filter((p) => !sorted.has(p.name));
+  const key = new Map(fresh.map((p) => [p, core.dateKey(p.name)]));
+  fresh.sort((a, b) => {
+    const ka = key.get(a), kb = key.get(b);
+    if (ka !== kb) {
+      if (ka === null) return 1;
+      if (kb === null) return -1;
+      return ka < kb ? 1 : -1;
+    }
+    return a.name < b.name ? 1 : a.name > b.name ? -1 : 0;
+  });
+  return { chosen: fresh.slice(0, Math.max(0, n)), fresh: fresh.length, sorted: photos.length - fresh.length };
+};
+
+// What the first bytes of a photo say: format, pixel size, camera make and model,
+// orientation, and where the small preview picture sits inside a JPEG (start and
+// length within these bytes). Never throws; anything it cannot read stays null.
+core.imageInfo = (b) => {
+  const info = { format: null, width: null, height: null, make: null, model: null, orientation: 1, thumb: null };
+  const u16 = (i) => (b[i] << 8) | b[i + 1];
+  const u32 = (i) => b[i] * 16777216 + ((b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]);
+  const ascii = (i, n) => String.fromCharCode(...b.subarray(i, i + n));
+  try {
+    if (b.length >= 24 && u32(0) === 0x89504E47) {
+      info.format = 'png'; info.width = u32(16); info.height = u32(20);
+      return info;
+    }
+    if (b.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP') { info.format = 'webp'; return info; }
+    if (!(b[0] === 0xFF && b[1] === 0xD8)) return info;
+    info.format = 'jpeg';
+    let i = 2;
+    while (i + 4 <= b.length) {
+      if (b[i] !== 0xFF) break;
+      const m = b[i + 1];
+      if (m === 0xFF) { i++; continue; }
+      if (m === 0x01 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }
+      if (m === 0xD9 || m === 0xDA) break;
+      const len = u16(i + 2);
+      const end = Math.min(b.length, i + 2 + len);
+      if (m === 0xE1 && ascii(i + 4, 6) === 'Exif\0\0') core.readExif(b, i + 10, end, info);
+      if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC && i + 9 <= b.length) {
+        info.height = u16(i + 5); info.width = u16(i + 7);
+        break;
+      }
+      i += 2 + len;
+    }
+  } catch (e) { /* a broken header: keep what was read */ }
+  return info;
+};
+
+// The camera data (EXIF) block: a little TIFF file starting at t. IFD0 holds the
+// make, model and orientation; IFD1, the next one, points at the preview JPEG.
+core.readExif = (b, t, end, info) => {
+  const le = b[t] === 0x49 && b[t + 1] === 0x49;
+  if (!le && !(b[t] === 0x4D && b[t + 1] === 0x4D)) return;
+  const inside = (i, n) => i >= t && i + n <= end;
+  const u16 = (i) => (le ? b[i] | (b[i + 1] << 8) : (b[i] << 8) | b[i + 1]);
+  const u32 = (i) => (le ? (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16)) + b[i + 3] * 16777216
+    : b[i] * 16777216 + ((b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]));
+  if (!inside(t, 8) || u16(t + 2) !== 42) return;
+  const text = (e) => {
+    const n = u32(e + 4), at = n <= 4 ? e + 8 : t + u32(e + 8);
+    if (!inside(at, n)) return null;
+    const s = String.fromCharCode(...b.subarray(at, at + n)).replace(/[\0\s]+$/, '');
+    return s || null;
+  };
+  const ifd0 = t + u32(t + 4);
+  if (!inside(ifd0, 2)) return;
+  const n0 = u16(ifd0);
+  for (let k = 0; k < n0; k++) {
+    const e = ifd0 + 2 + k * 12;
+    if (!inside(e, 12)) return;
+    const tag = u16(e);
+    if (tag === 0x010F) info.make = text(e);
+    else if (tag === 0x0110) info.model = text(e);
+    else if (tag === 0x0112) { const o = u16(e + 8); if (o >= 1 && o <= 8) info.orientation = o; }
+  }
+  const next = ifd0 + 2 + n0 * 12;
+  if (!inside(next, 4) || u32(next) === 0) return;
+  const ifd1 = t + u32(next);
+  if (!inside(ifd1, 2)) return;
+  let start = null, length = null;
+  for (let k = 0; k < u16(ifd1); k++) {
+    const e = ifd1 + 2 + k * 12;
+    if (!inside(e, 12)) return;
+    if (u16(e) === 0x0201) start = t + u32(e + 8);
+    else if (u16(e) === 0x0202) length = u32(e + 8);
+  }
+  if (start !== null && length > 0 && inside(start, length)) info.thumb = { start, length };
+};
+
+// Width and height once the orientation is applied: 5 to 8 are quarter turns.
+core.orientedSize = (w, h, o) => (o >= 5 ? { w: h, h: w } : { w, h });
+
+// The canvas transform that draws a w x h picture upright for EXIF orientation o,
+// as [a, b, c, d, e, f] for ctx.setTransform. The canvas must be orientedSize.
+core.orientMatrix = (o, w, h) => ({
+  1: [1, 0, 0, 1, 0, 0], 2: [-1, 0, 0, 1, w, 0], 3: [-1, 0, 0, -1, w, h], 4: [1, 0, 0, -1, 0, h],
+  5: [0, 1, 1, 0, 0, 0], 6: [0, 1, -1, 0, h, 0], 7: [0, -1, -1, 0, h, w], 8: [0, -1, 1, 0, 0, w],
+})[o] || [1, 0, 0, 1, 0, 0];
+
+// Where the face detector looks: the whole photo, then four overlapping corners
+// each `k` of its size, so smaller faces fill more of what the model sees.
+core.tiles = (w, h, k = 0.6) => {
+  const tw = Math.round(w * k), th = Math.round(h * k);
+  return [{ x: 0, y: 0, w, h, full: true },
+    { x: 0, y: 0, w: tw, h: th }, { x: w - tw, y: 0, w: tw, h: th },
+    { x: 0, y: h - th, w: tw, h: th }, { x: w - tw, y: h - th, w: tw, h: th }];
+};
+
+// Faces from all the looks, measured against the whole photo (W x H). A face
+// counts if it is confident and big enough. The count is the most found in any
+// one look, so a face seen twice in overlapping looks is not counted twice.
+core.facesFrom = (runs, W, H, rules = RULES) => {
+  const out = { count: 0, size: 0, score: 0 };
+  for (const run of runs) {
+    let n = 0;
+    for (const d of run.dets) {
+      const size = Math.max(d.w / W, d.h / H);
+      if (d.score < rules.faceScore || size < rules.faceSize) continue;
+      n++;
+      out.size = Math.max(out.size, size);
+      out.score = Math.max(out.score, d.score);
+    }
+    out.count = Math.max(out.count, n);
+  }
+  return out;
+};
+
+// Is this mostly text on paper or a screen? From a small look at the pixels
+// (RGBA, w x h): mostly bright, little colour, some dark strokes, and many
+// sharp light-dark steps along each row.
+core.textLike = (d, w, h, rules = RULES.text) => {
+  let bright = 0, dark = 0, sat = 0, edges = 0;
+  const n = w * h;
+  for (let y = 0; y < h; y++) {
+    let prev = -1;
+    for (let x = 0; x < w; x++) {
+      const i = 4 * (y * w + x);
+      const r = d[i], g = d[i + 1], bl = d[i + 2];
+      const max = Math.max(r, g, bl), min = Math.min(r, g, bl);
+      const lum = 0.299 * r + 0.587 * g + 0.114 * bl;
+      if (lum > 170) bright++;
+      if (lum < 110) dark++;
+      sat += max ? (max - min) / max : 0;
+      if (prev >= 0 && Math.abs(lum - prev) > 60) edges++;
+      prev = lum;
+    }
+  }
+  const m = { bright: bright / n, dark: dark / n, sat: sat / n, edges: edges / n };
+  m.isText = m.bright >= rules.bright && m.dark >= rules.darkMin && m.dark <= rules.darkMax &&
+    m.sat <= rules.satMax && m.edges >= rules.edgeMin;
+  return m;
+};
+
+core.inGroup = (index, ranges) => ranges.some(([a, z]) => index >= a && index <= z);
+
+// The rules, in order. p: { name, format, make, width, height, faces, labels, text }.
+// 1 screenshots: by file name, or a screen-shaped PNG with no camera data;
+// 2 people: a face found; 3 documents: the picture looks like text;
+// 4 the folder whose labels add up highest, if high enough; 5 other.
+core.categorize = (p, rules = RULES, groups = LABEL_GROUPS) => {
+  if (/^screenshot/i.test(p.name)) return { category: 'screenshots', reason: 'screenshot by its name' };
+  if (p.format === 'png' && !p.make && p.width && p.height) {
+    const short = Math.min(p.width, p.height), long = Math.max(p.width, p.height);
+    if (long >= rules.screenLong && short / long >= rules.screenRatio[0] && short / long <= rules.screenRatio[1]) {
+      return { category: 'screenshots', reason: 'screen-sized picture with no camera data' };
+    }
+  }
+  if (p.faces && p.faces.count > 0) {
+    return { category: 'people', reason: p.faces.count + (p.faces.count === 1 ? ' face' : ' faces') + ', ' + p.faces.score.toFixed(2) };
+  }
+  if (p.text) return { category: 'documents', reason: 'mostly text' };
+  const top = (p.labels || []).slice(0, rules.topLabels);
+  let best = null;
+  for (const g of Object.keys(groups)) {
+    const mine = top.filter((l) => core.inGroup(l.index, groups[g]));
+    const sum = mine.reduce((s, l) => s + l.score, 0);
+    if (mine.length && (!best || sum > best.sum)) best = { g, sum, label: mine[0] };
+  }
+  if (best && best.sum >= rules.labelMin) {
+    return { category: best.g, reason: best.label.name + ' ' + best.label.score.toFixed(2) + ', ' + best.g + ' ' + best.sum.toFixed(2) };
+  }
+  const t = top[0];
+  return { category: 'other', reason: 'nothing clear' + (t ? ' (best guess: ' + t.name + ' ' + t.score.toFixed(2) + ')' : '') };
+};
+
+// Run load(item) up to `depth` items ahead of each(result, i), which sees the
+// results one at a time, in order. each returning false stops the run. Lets the
+// phone read and decode the next photos while the models look at this one.
+core.mapAhead = async (items, depth, load, each) => {
+  const pending = [];
+  let next = 0;
+  const fill = () => {
+    while (next < items.length && pending.length < depth) {
+      const p = load(items[next++]);
+      p.catch(() => {});
+      pending.push(p);
+    }
+  };
+  fill();
+  for (let i = 0; i < items.length; i++) {
+    const r = await pending.shift();
+    fill();
+    if ((await each(r, i)) === false) break;
+  }
+};
+
+// The safe copy. F1 copies only: the original is never changed or deleted.
+//   1. read the original (through its handle from the listing: no slow lookup
+//      by name in a big folder) and note its size and SHA-256
+//   2. refuse if the target folder already has that name (never overwrite):
+//      checked against the names listed at the start, then in the folder itself
 //   3. write the copy
-//   4. read the copy back from the folder and take its size and SHA-256
-//   5. any difference stops here and keeps both files
-//   6. check the original has not changed since step 1
-//   7. only now delete the original, and check it is gone
-// Never throws: the returned log says how far it got, why it stopped, and what
-// was kept ('original', 'both' or, after a good move, 'copy').
-// opts.alterCopy(file) is for the probe's forced mismatch only: it returns the
-// bytes to write in place of the original's. opts.onStep(step) hears each step
-// as it starts, for a progress line.
-core.safeMove = async (fromDir, name, toDir, opts = {}) => {
+//   4. read the copy back and take its size and SHA-256
+//   5. any difference is a failure: the run stops and both files are kept
+// Never throws: the returned log says how far it got and why it stopped.
+// opts.existing: the target folder's names; opts.onStep(step) hears each step.
+core.safeCopy = async (src, name, toDir, opts = {}) => {
   const now = opts.now || (() => performance.now());
-  const log = { name, ok: false, step: '', kept: 'original', ms: {} };
+  const log = { name, ok: false, skipped: false, step: '', copyMade: false, ms: {} };
   const at = (s) => { log.step = s; if (opts.onStep) opts.onStep(s); };
   let t = now();
   const lap = (k) => { const n = now(); log.ms[k] = n - t; t = n; };
   try {
     at('read original');
-    const src = await fromDir.getFileHandle(name);
     const orig = await src.getFile();
     log.size = orig.size;
     log.sha256 = await core.sha256(orig);
     lap('hash');
     at('check target');
-    if (await core.exists(toDir, name)) { log.reason = 'the target folder already has a file with this name'; return log; }
+    if ((opts.existing && opts.existing.has(name)) || await core.exists(toDir, name)) {
+      log.skipped = true;
+      log.reason = 'already in the target folder';
+      return log;
+    }
     at('copy');
     const dst = await toDir.getFileHandle(name, { create: true });
-    log.kept = 'both';
+    log.copyMade = true;
     const w = await dst.createWritable();
     try {
-      await w.write(opts.alterCopy ? await opts.alterCopy(orig) : orig);
+      await w.write(orig);
       await w.close();
     } catch (e) {
       try { await w.abort(); } catch (_) { /* already closed */ }
@@ -356,22 +671,13 @@ core.safeMove = async (fromDir, name, toDir, opts = {}) => {
     }
     lap('copy');
     at('read back');
-    const copy = await (await toDir.getFileHandle(name)).getFile();
+    const copy = await dst.getFile();
     log.copySize = copy.size;
     log.copySha256 = await core.sha256(copy);
     lap('readBack');
     at('compare');
     if (copy.size !== orig.size) { log.reason = 'size differs: copy ' + copy.size + ' B, original ' + orig.size + ' B'; return log; }
     if (log.copySha256 !== log.sha256) { log.reason = 'SHA-256 differs'; return log; }
-    at('recheck original');
-    const again = await src.getFile();
-    if (again.size !== orig.size || again.lastModified !== orig.lastModified) { log.reason = 'the original changed during the copy'; return log; }
-    at('delete original');
-    await fromDir.removeEntry(name);
-    lap('delete');
-    log.kept = 'copy';
-    log.originalGone = !(await core.exists(fromDir, name));
-    if (!log.originalGone) { log.kept = 'both'; log.reason = 'the original is still listed after the delete'; return log; }
     at('done');
     log.ok = true;
   } catch (e) {
@@ -382,105 +688,25 @@ core.safeMove = async (fromDir, name, toDir, opts = {}) => {
 // CORE:END
 
 /* ============================================================
-   c. Probe
+   c. App
    ============================================================ */
 
 const $ = (s) => document.querySelector(s);
 const pad2 = (n) => String(n).padStart(2, '0');
 const fmtDate = (t) => { const d = new Date(t); return pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1) + '/' + pad2(d.getFullYear() % 100); };
 const fmtTime = (t) => { const d = new Date(t); return pad2(d.getHours()) + pad2(d.getMinutes()) + ' hrs'; };
-const fmtMs = (x) => (x < 10 ? x.toFixed(1) : Math.round(x)) + ' ms';
-const fmtMB = (b) => (b / 1e6).toFixed(2) + ' MB';
-const short = (sha) => (sha ? sha.slice(0, 16) + '...' : 'none');
+const fmtS = (x) => (x < 100000 ? (x / 1000).toFixed(1) + ' s' : Math.round(x / 60000) + ' min');
+const stamp = () => { const d = new Date(); return pad2(d.getFullYear() % 100) + pad2(d.getMonth() + 1) + pad2(d.getDate()) + '-' + pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds()); };
 const now = () => performance.now();
 const errText = (e) => (e && e.name ? e.name + ': ' : '') + ((e && e.message) || String(e));
 
-/* ---------- Results: kept on the phone between openings ---------- */
-
-const SECTIONS = [
-  { id: 'device', title: '00 THIS PHONE' },
-  { id: 'folder', title: '01 FOLDER' },
-  { id: 'move', title: '02 SAFE MOVE' },
-  { id: 'reopen', title: '03 REOPEN' },
-  { id: 'recog', title: '04 RECOGNITION' },
-];
-const STORE_KEY = 'filter-probe-results';
-let results = {};
-try { results = JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch (e) { results = {}; }
-const saveResults = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(results)); } catch (e) { /* private mode: results stay on screen only */ } };
-
-// rows: [label, value, tone] with tone 'pass' | 'watch' | 'fail' | undefined.
-function setSection(id, rows, verdict) {
-  results[id] = { at: Date.now(), verdict: verdict || null, rows };
-  saveResults();
-  render(id);
-}
-
-function render(id) {
-  const box = $('#rows-' + id);
-  const sec = results[id];
+function rows(box, list) {
   box.replaceChildren();
-  if (sec) for (const [k, v, tone] of sec.rows) {
+  for (const [k, v, tone] of list) {
     const r = document.createElement('div'); r.className = 'r';
     const kk = document.createElement('span'); kk.className = 'k'; kk.textContent = k;
     const vv = document.createElement('span'); vv.className = 'v' + (tone ? ' ' + tone : ''); vv.textContent = v;
     r.append(kk, vv); box.append(r);
-  }
-  const vd = $('#verdict-' + id);
-  if (vd) {
-    vd.className = 'verdict' + (sec && sec.verdict ? ' ' + sec.verdict : '');
-    vd.textContent = sec && sec.verdict ? sec.verdict + ' ▸ ' + fmtTime(sec.at) : '';
-  }
-  $('#report').textContent = reportText();
-}
-
-function reportText() {
-  const out = ['filter F0 probe v' + APP_VERSION + ', report made ' + fmtDate(Date.now()) + ' ' + fmtTime(Date.now())];
-  for (const s of SECTIONS) {
-    const sec = results[s.id];
-    out.push('');
-    if (!sec) { out.push(s.title + ': not run'); continue; }
-    out.push(s.title + (sec.verdict ? ' [' + sec.verdict.toUpperCase() + ']' : '') + ' run ' + fmtDate(sec.at) + ' ' + fmtTime(sec.at));
-    for (const [k, v, tone] of sec.rows) out.push('  ' + k + ': ' + v + (tone === 'fail' ? '  <FAIL' : ''));
-  }
-  return out.join('\n');
-}
-
-/* ---------- Busy state and the status strip ---------- */
-
-let folder = null;       // the picked folder's handle, once access is granted
-let lastBatch = null;    // the most recent "Read 500" result
-let busy = false;
-let stopRequested = false;
-
-function status(text, isBusy) {
-  const s = $('#status');
-  s.textContent = text;
-  s.classList.toggle('busy', !!isBusy);
-}
-function refreshButtons() {
-  $('#btn-pick').disabled = busy;
-  for (const b of ['#btn-read', '#btn-count', '#btn-move', '#btn-recog']) $(b).disabled = busy || !folder;
-  $('#btn-ask').disabled = busy;
-  $('#btn-clear').disabled = busy;
-}
-// While a test runs, the strip shows what it is doing and the seconds since it
-// started, so a slow step on the phone visibly keeps going.
-let taskLabel = '';
-const step = (label) => { taskLabel = label; };
-async function task(label, fn) {
-  if (busy) return;
-  busy = true; refreshButtons();
-  taskLabel = label;
-  const t0 = Date.now();
-  const tick = () => status(taskLabel + ' ▸ ' + Math.round((Date.now() - t0) / 1000) + ' s', true);
-  tick();
-  const timer = setInterval(tick, 1000);
-  try { await fn(); }
-  finally {
-    clearInterval(timer);
-    busy = false; refreshButtons();
-    status(folder ? 'folder ▸ ' + folder.name : 'no folder yet');
   }
 }
 
@@ -492,18 +718,71 @@ function notice(text, action) {
   if (action) { a.textContent = action.label; a.onclick = action.fn; }
   $('#notice').hidden = false;
   clearTimeout(noticeTimer);
-  if (!action) noticeTimer = setTimeout(() => { $('#notice').hidden = true; }, 3000);
+  if (!action) noticeTimer = setTimeout(() => { $('#notice').hidden = true; }, 4000);
 }
 $('#notice-close').addEventListener('click', () => { $('#notice').hidden = true; });
 
-/* ---------- Stored folder handle (IndexedDB) ---------- */
+/* ---------- State ---------- */
 
-// A folder handle can be kept in IndexedDB between openings. Whether Chrome on
-// Android still lets the app use it after a restart is question 3.
+const state = {
+  screen: 'start',
+  busy: false,
+  folder: null,       // the picked folder's handle, once access is granted
+  stored: null,       // the folder record kept in IndexedDB
+  photos: [],         // photos in the folder: { name, handle }
+  sorted: {},         // per category folder: the Set of names already in it
+  sortedAll: new Set(),
+  plan: [],           // one item per photo: { name, handle, category, first, reason, thumb, preview }
+  stopRequested: false,
+  lastRun: null,
+};
+
+function show(screen) {
+  state.screen = screen;
+  document.body.dataset.screen = screen;
+  $('#btn-copy').hidden = screen !== 'review';
+  $('#btn-restart').hidden = screen !== 'review';
+  if (screen !== 'review') $('#bar-edge').textContent = fmtDate(Date.now()) + ' ▸ v' + APP_VERSION;
+  window.scrollTo(0, 0);
+  refreshStatus();
+}
+
+// While work runs, the strip says what and counts the seconds, so a slow step
+// on the phone visibly keeps going.
+let taskLabel = '', taskStart = 0, taskTimer = 0;
+const step = (label) => { taskLabel = label; refreshStatus(); };
+function refreshStatus() {
+  const s = $('#status');
+  if (state.busy) {
+    s.textContent = taskLabel + ' ▸ ' + Math.round((Date.now() - taskStart) / 1000) + ' s';
+    s.classList.add('busy');
+  } else {
+    s.textContent = state.folder ? 'folder ▸ ' + state.folder.name : state.stored ? 'access needed' : 'no folder yet';
+    s.classList.remove('busy');
+  }
+}
+async function task(label, fn) {
+  if (state.busy) return;
+  state.busy = true; taskLabel = label; taskStart = Date.now();
+  refreshStatus();
+  taskTimer = setInterval(refreshStatus, 1000);
+  try { await fn(); }
+  catch (e) { notice('Something went wrong: ' + errText(e)); }
+  finally {
+    clearInterval(taskTimer);
+    state.busy = false;
+    refreshStatus();
+  }
+}
+
+/* ---------- Stored folder (IndexedDB) ---------- */
+
+// F0: Chrome on Android forgets folder access at every restart but keeps the
+// folder itself, so its handle is stored here and one tap brings access back.
 const idb = {
   open() {
     return new Promise((resolve, reject) => {
-      const r = indexedDB.open('filter-probe', 1);
+      const r = indexedDB.open('filter', 1);
       r.onupgradeneeded = () => r.result.createObjectStore('kv');
       r.onsuccess = () => resolve(r.result);
       r.onerror = () => reject(r.error);
@@ -524,451 +803,432 @@ const idb = {
   set(k, v) { return this.run('readwrite', (s) => s.put(v, k)); },
 };
 
-const isStandalone = () => matchMedia('(display-mode: standalone)').matches;
+/* ---------- Start ---------- */
 
-/* ---------- 00 This phone ---------- */
-
-// The plain browser ID always says "Android 10" and hides the minor Chrome
-// version; the real values have to be asked for separately (client hints).
-async function deviceRows() {
-  const ua = navigator.userAgent;
-  let chrome = (ua.match(/Chrome\/([\d.]+)/) || [])[1] || 'not Chrome';
-  let android = /Android/.test(ua) ? 'unknown (the browser ID always says 10)' : 'not Android';
-  let model = '';
-  try {
-    const d = navigator.userAgentData;
-    const h = await d.getHighEntropyValues(['platformVersion', 'model', 'fullVersionList']);
-    const full = (h.fullVersionList || []).find((b) => /Chrom/.test(b.brand));
-    if (full) chrome = full.version;
-    if (d.platform === 'Android') { android = h.platformVersion || android; model = h.model || ''; }
-  } catch (e) { /* older Chrome: keep what the browser ID says */ }
-  return [
-    ['Chrome', chrome],
-    ['Android', android + (model ? ', ' + model : '')],
-    ['Opened as', isStandalone() ? 'installed app' : 'browser tab', isStandalone() ? 'pass' : 'watch'],
-    ['Folder API', 'showDirectoryPicker' in window ? 'available' : 'missing', 'showDirectoryPicker' in window ? 'pass' : 'fail'],
-    ['Processor', (navigator.hardwareConcurrency || '?') + ' cores, ' + (navigator.deviceMemory ? navigator.deviceMemory + ' GB memory as Chrome reports it (rounded, often capped)' : 'memory not reported')],
-    ['App', 'v' + APP_VERSION],
-  ];
+async function boot() {
+  let rec = null;
+  try { rec = await idb.get('folder'); } catch (e) { rec = null; }
+  if (rec && rec.handle) {
+    state.stored = rec;
+    let perm = 'prompt';
+    try { perm = await rec.handle.queryPermission({ mode: 'readwrite' }); } catch (e) { perm = 'prompt'; }
+    if (perm === 'granted') { await openFolder(rec.handle); return; }
+    $('#btn-allow').textContent = 'Allow access to ' + rec.name;
+    $('#btn-allow').hidden = false;
+    $('#btn-pick').textContent = 'Pick another folder';
+    $('#btn-pick').classList.remove('btn-primary', 'btn-big');
+    $('#start-note').textContent = 'Chrome asks again after every restart. One tap on Allow brings ' + rec.name + ' back.';
+  }
+  show('start');
 }
 
-/* ---------- 01 Folder ---------- */
+async function allowAccess() {
+  const rec = state.stored;
+  let perm = 'denied';
+  try { perm = await rec.handle.requestPermission({ mode: 'readwrite' }); } catch (e) { perm = 'error'; }
+  if (perm === 'granted') await openFolder(rec.handle);
+  else $('#start-note').textContent = 'Access was not given. Tap Allow again, or pick the folder.';
+}
 
 async function pickFolder() {
-  if (!('showDirectoryPicker' in window)) {
-    setSection('folder', [['Picker', 'showDirectoryPicker is not available in this browser', 'fail']], 'fail');
-    return;
-  }
+  if (!('showDirectoryPicker' in window)) { $('#start-note').textContent = 'This browser cannot open folders. Use Chrome on Android.'; show('start'); return; }
   let h;
-  try { h = await window.showDirectoryPicker({ id: 'filter-probe', mode: 'readwrite' }); }
+  try { h = await window.showDirectoryPicker({ id: 'filter', mode: 'readwrite' }); }
   catch (e) {
-    if (e && e.name === 'AbortError') return;     // Gary closed the picker
-    setSection('folder', [['Picker', errText(e), 'fail']], 'fail');
+    if (e && e.name === 'AbortError') return;
+    $('#start-note').textContent = 'Could not open the folder: ' + errText(e);
+    show('start');
     return;
   }
-  folder = h;
-  lastBatch = null;
-  try { await idb.set('folder', { handle: h, name: h.name, storedAt: Date.now(), opens: 0 }); }
-  catch (e) { notice('Could not store the folder for question 3: ' + errText(e)); }
-  status('folder ▸ ' + h.name);
-  await readFirst();
+  state.stored = { handle: h, name: h.name, storedAt: Date.now() };
+  try { await idb.set('folder', state.stored); } catch (e) { /* it works for this session anyway */ }
+  await openFolder(h);
 }
 
-async function readFirst() {
-  const rows = [['Folder', folder.name]];
-  let verdict = 'pass';
-  try {
-    const b = await core.readBatch(folder.values(), { limit: config.batch, stallMs: config.stallMs });
-    lastBatch = b;
-    const c = b.counts;
-    rows.push(['Entries', b.entries.length + (b.done ? ', the whole folder' : ', stopped at ' + config.batch + ', there are more')]);
-    rows.push(['Photos', String(c.photo)], ['Videos', String(c.video)], ['Subfolders', String(c.folder)]);
-    rows.push(['Hidden', c.hidden + ' (bin and part-written files, names starting with a dot)']);
-    rows.push(['Other', String(c.other)]);
-    rows.push(['First entry', b.firstMs === null ? 'none' : fmtMs(b.firstMs)]);
-    rows.push(['Read time', fmtMs(b.ms) + (b.entries.length ? ', ' + fmtMs(b.ms / b.entries.length) + ' per entry' : '')]);
-    if (b.stalled) { verdict = 'fail'; rows.push(['Stall', 'nothing new for ' + config.stallMs / 1000 + ' s after ' + b.entries.length + ' entries', 'fail']); }
-    else rows.push(['Stall', 'none', 'pass']);
-    // Sizes need one getFile() per file: time it on a sample, as the real app will need sizes.
-    const media = b.entries.filter((e) => e.kind === 'photo' || e.kind === 'video').slice(0, config.mediaSizeSample);
-    if (media.length) {
-      const t0 = now(); let bytes = 0;
-      for (const e of media) bytes += (await e.handle.getFile()).size;
-      const t = now() - t0;
-      rows.push(['File sizes', media.length + ' files, ' + fmtMB(bytes) + ' in all, ' + fmtMs(t / media.length) + ' each to read the size']);
-    }
-  } catch (e) {
-    verdict = 'fail';
-    rows.push(['Error', errText(e), 'fail']);
-  }
-  setSection('folder', rows, verdict);
-}
+/* ---------- Setup: list the folder and filter's own subfolders ---------- */
 
-async function countAll() {
-  const totals = { photo: 0, video: 0, folder: 0, hidden: 0, other: 0 };
-  let entries = 0, batches = 0, slowest = 0, stalled = false, done = false;
+async function openFolder(h) {
+  state.folder = h;
+  clearPlan();
+  $('#setup-name').textContent = h.name;
+  $('#btn-sort').disabled = true;
+  $('#setup-note').textContent = '';
+  rows($('#setup-rows'), [['Reading', 'the folder, a few seconds in a big one']]);
+  show('setup');
+  step('reading ' + h.name);
   const t0 = now();
-  stopRequested = false;
-  $('#btn-stop').hidden = false;
-  try {
-    const it = folder.values();
-    while (!stopRequested) {
-      const b = await core.readBatch(it, { limit: config.batch, stallMs: config.stallMs });
-      batches++;
-      entries += b.entries.length;
-      for (const k in totals) totals[k] += b.counts[k];
-      slowest = Math.max(slowest, b.ms);
-      status('counting ▸ ' + entries + ' entries', true);
-      if (b.stalled) { stalled = true; break; }
-      if (b.done) { done = true; break; }
+  const photos = [], subfolders = new Map();
+  let entries = 0, stalled = false;
+  const it = h.values();
+  for (;;) {
+    const b = await core.readBatch(it, { limit: config.batch, stallMs: config.stallMs });
+    entries += b.entries.length;
+    for (const e of b.entries) {
+      if (e.kind === 'photo') photos.push({ name: e.name, handle: e.handle });
+      else if (e.kind === 'folder' && CATEGORIES.includes(e.name)) subfolders.set(e.name, e.handle);
     }
-  } catch (e) {
-    const prev = results.folder ? results.folder.rows : [];
-    setSection('folder', prev.concat([['Count all', errText(e), 'fail']]), 'fail');
-    return;
-  } finally { $('#btn-stop').hidden = true; }
-  const t = now() - t0;
-  const prev = (results.folder ? results.folder.rows : []).filter((r) => !r[0].startsWith('All '));
-  const rows = prev.concat([
-    ['All entries', entries + (done ? ', whole folder' : stalled ? ', stalled' : ', stopped by hand'), done ? 'pass' : stalled ? 'fail' : 'watch'],
-    ['All counts', totals.photo + ' photos, ' + totals.video + ' videos, ' + totals.folder + ' subfolders, ' + totals.hidden + ' hidden, ' + totals.other + ' other'],
-    ['All time', fmtMs(t) + ' in ' + batches + ' batches, slowest batch ' + fmtMs(slowest)],
+    step('reading ' + h.name + ', ' + entries + ' entries');
+    if (b.stalled) { stalled = true; break; }
+    if (b.done) break;
+  }
+  // filter's own folders are small, so listing them is quick. Their names mark
+  // photos already sorted, which later runs skip.
+  state.sorted = {};
+  state.sortedAll = new Set();
+  for (const c of CATEGORIES) {
+    state.sorted[c] = new Set();
+    const d = subfolders.get(c);
+    if (!d) continue;
+    for await (const x of d.values()) if (x.kind === 'file') { state.sorted[c].add(x.name); state.sortedAll.add(x.name); }
+  }
+  state.photos = photos;
+  const fresh = photos.filter((p) => !state.sortedAll.has(p.name)).length;
+  rows($('#setup-rows'), [
+    ['Entries', entries + ' in ' + fmtS(now() - t0) + (stalled ? ', stopped: the folder stalled' : ''), stalled ? 'watch' : undefined],
+    ['Photos', String(photos.length)],
+    ['Already sorted', String(photos.length - fresh)],
+    ['Not yet sorted', String(fresh)],
   ]);
-  const verdict = stalled ? 'fail' : (results.folder && results.folder.verdict === 'fail') ? 'fail' : done ? 'pass' : 'watch';
-  setSection('folder', rows, verdict);
+  $('#newest').value = Math.min(config.newest, Math.max(1, fresh));
+  $('#btn-sort').disabled = fresh === 0;
+  if (!fresh) $('#setup-note').textContent = photos.length ? 'Every photo here is already sorted.' : 'No photos in this folder.';
 }
 
-/* ---------- 02 Safe move ---------- */
+/* ---------- Models ---------- */
 
-const stamp = () => { const d = new Date(); return pad2(d.getFullYear() % 100) + pad2(d.getMonth() + 1) + pad2(d.getDate()) + '-' + pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds()); };
+// MediaPipe loads on the first run, from vendor/ (or the offline cache). The
+// models run here in WebAssembly; the photos go nowhere.
+const recog = {
+  promise: null,
+  // Test seam: (entry) => { labels: [{ index, name, score }], faces: [{ w, h, score }] }
+  // with faces as shares of the photo, used instead of the models.
+  override: null,
+  load() {
+    if (this.override) return Promise.resolve(null);
+    if (!this.promise) {
+      this.promise = (async () => {
+        const mp = await import('./vendor/mediapipe/vision_bundle.js');
+        const fileset = { wasmLoaderPath: MP.loader, wasmBinaryPath: MP.wasm };
+        const classifier = await mp.ImageClassifier.createFromOptions(fileset,
+          { baseOptions: { modelAssetPath: MP.classifier, delegate: 'CPU' }, runningMode: 'IMAGE', maxResults: RULES.topLabels });
+        const detector = await mp.FaceDetector.createFromOptions(fileset,
+          { baseOptions: { modelAssetPath: MP.faces, delegate: 'CPU' }, runningMode: 'IMAGE', minDetectionConfidence: 0.5 });
+        return { classifier, detector };
+      })();
+      this.promise.catch(() => { this.promise = null; });     // a failed load can be tried again
+    }
+    return this.promise;
+  },
+  async analyse(bmp, entry) {
+    if (this.override) {
+      const o = this.override(entry) || {};
+      return { labels: o.labels || [], faces: core.facesFrom([{ dets: o.faces || [] }], 1, 1) };
+    }
+    const { classifier, detector } = await this.load();
+    const r = classifier.classify(bmp);
+    const labels = r.classifications[0].categories.map((c) => ({ index: c.index, name: c.categoryName, score: c.score }));
+    const runs = [];
+    for (const t of core.tiles(bmp.width, bmp.height)) {
+      const img = t.full ? bmp : await createImageBitmap(bmp, t.x, t.y, t.w, t.h);
+      try {
+        const d = detector.detect(img);
+        runs.push({ dets: d.detections.map((x) => ({ w: x.boundingBox.width, h: x.boundingBox.height, score: x.categories[0].score })) });
+      } finally { if (img !== bmp) img.close(); }
+    }
+    return { labels, faces: core.facesFrom(runs, bmp.width, bmp.height) };
+  },
+};
 
-// The probe's own test picture: random noise, so it does not compress and is a
-// realistic size to copy. It shows no person and no place.
-async function makeTestImage(side) {
-  const c = new OffscreenCanvas(side, side);
+/* ---------- Reading and decoding one photo ---------- */
+
+// Draws a bitmap upright for its EXIF orientation. The preview inside a JPEG
+// has no orientation of its own, so it needs this; full decodes do it themselves.
+async function upright(bmp, o) {
+  if (o === 1) return bmp;
+  const s = core.orientedSize(bmp.width, bmp.height, o);
+  const c = new OffscreenCanvas(s.w, s.h);
   const ctx = c.getContext('2d');
-  const img = ctx.createImageData(side, side);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 65536) crypto.getRandomValues(d.subarray(i, Math.min(d.length, i + 65536)));
-  for (let i = 3; i < d.length; i += 4) d[i] = 255;
-  ctx.putImageData(img, 0, 0);
-  ctx.fillStyle = '#141312'; ctx.fillRect(0, side * 0.42, side, side * 0.16);
-  ctx.fillStyle = '#F2A33A'; ctx.font = '600 ' + Math.round(side * 0.08) + 'px sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('FILTER PROBE TEST', side / 2, side / 2);
-  return c.convertToBlob({ type: 'image/png' });
+  ctx.setTransform(...core.orientMatrix(o, bmp.width, bmp.height));
+  ctx.drawImage(bmp, 0, 0);
+  bmp.close();
+  return c.transferToImageBitmap();
 }
 
-// Writing and deleting outside core.safeMove go only through these three, and
-// only for names the probe made. filter_checks.cjs holds the code to that.
-async function writeProbeFile(dir, name, blob) {
-  if (!name.startsWith(PROBE_PREFIX)) throw new Error('refusing to write a file the probe did not name');
-  if (await core.exists(dir, name)) throw new Error(name + ' already exists');
+async function prepare(entry) {
+  const t0 = now();
+  try {
+    const file = await entry.handle.getFile();
+    const head = new Uint8Array(await file.slice(0, config.headBytes).arrayBuffer());
+    const info = core.imageInfo(head);
+    let bmp = null, preview = false;
+    if (info.thumb) {
+      try {
+        const tb = await createImageBitmap(new Blob([head.subarray(info.thumb.start, info.thumb.start + info.thumb.length)], { type: 'image/jpeg' }));
+        if (Math.max(tb.width, tb.height) >= config.previewMin) { bmp = await upright(tb, info.orientation); preview = true; }
+        else tb.close();
+      } catch (e) { /* a broken preview: decode the photo itself */ }
+    }
+    if (!bmp) {
+      const s = info.width ? core.orientedSize(info.width, info.height, info.orientation) : null;
+      const opts = { imageOrientation: 'from-image', resizeQuality: 'medium' };
+      if (s && Math.max(s.w, s.h) > config.analyseSide) {
+        if (s.w >= s.h) opts.resizeWidth = config.analyseSide; else opts.resizeHeight = config.analyseSide;
+      }
+      bmp = await createImageBitmap(file, opts);
+    }
+    const size = info.width ? core.orientedSize(info.width, info.height, info.orientation) : { w: bmp.width, h: bmp.height };
+    return { entry, info, bmp, preview, size, ms: now() - t0 };
+  } catch (e) {
+    return { entry, error: errText(e), ms: now() - t0 };
+  }
+}
+
+function textCheck(bmp) {
+  const w = 128, h = Math.max(1, Math.round(128 * bmp.height / bmp.width));
+  const c = new OffscreenCanvas(w, h);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0, w, h);
+  return core.textLike(ctx.getImageData(0, 0, w, h).data, w, h);
+}
+
+async function thumbOf(bmp) {
+  const k = config.thumbSide / Math.max(bmp.width, bmp.height);
+  const c = new OffscreenCanvas(Math.max(1, Math.round(bmp.width * k)), Math.max(1, Math.round(bmp.height * k)));
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  return URL.createObjectURL(await c.convertToBlob({ type: 'image/jpeg', quality: 0.72 }));
+}
+
+/* ---------- Run: recognise the newest photos ---------- */
+
+function clearPlan() {
+  for (const p of state.plan) if (p.thumb) URL.revokeObjectURL(p.thumb);
+  state.plan = [];
+}
+
+async function runSort() {
+  const n = Math.min(config.maxNewest, Math.max(1, Math.round(+$('#newest').value) || config.newest));
+  const pick = core.pickNewest(state.photos, state.sortedAll, n);
+  if (!pick.chosen.length) return;
+  clearPlan();
+  state.stopRequested = false;
+  const stats = { preview: 0, decode: 0, analyse: 0, failed: 0 };
+  const tally = Object.fromEntries(CATEGORIES.map((c) => [c, 0]));
+  const total = pick.chosen.length;
+  $('#run-count').textContent = '0 / ' + total;
+  $('#run-fill').style.width = '0';
+  $('#run-tally').textContent = '';
+  $('#run-cap').textContent = 'Loading the models';
+  show('run');
+  step('loading the models');
+  try { await recog.load(); }
+  catch (e) {
+    $('#setup-note').textContent = 'The models did not load: ' + errText(e) + '. Try again; nothing was changed.';
+    show('setup');
+    return;
+  }
+  const t0 = now();
+  step('recognising');
+  await core.mapAhead(pick.chosen, config.prefetch, prepare, async (p, i) => {
+    const item = { name: p.entry.name, handle: p.entry.handle, category: STAY, reason: '', thumb: null, preview: !!p.preview };
+    if (p.error) {
+      item.reason = 'could not open: ' + p.error;
+      stats.failed++;
+    } else {
+      const a = now();
+      try {
+        const r = await recog.analyse(p.bmp, p.entry);
+        const text = textCheck(p.bmp);
+        const c = core.categorize({ name: p.entry.name, format: p.info.format, make: p.info.make,
+          width: p.size.w, height: p.size.h, faces: r.faces, labels: r.labels, text: text.isText });
+        item.category = c.category;
+        item.reason = c.reason;
+        item.thumb = await thumbOf(p.bmp);
+      } catch (e) {
+        item.reason = 'could not recognise: ' + errText(e);
+        stats.failed++;
+      } finally { p.bmp.close(); }
+      stats.analyse += now() - a;
+      stats.decode += p.ms;
+      if (p.preview) stats.preview++;
+    }
+    item.first = item.category;
+    state.plan.push(item);
+    tally[item.category]++;
+    const done = i + 1, per = (now() - t0) / done;
+    $('#run-count').textContent = done + ' / ' + total;
+    $('#run-fill').style.width = (100 * done / total) + '%';
+    $('#run-tally').textContent = CATEGORIES.filter((c) => tally[c]).map((c) => c + ' ' + tally[c]).join('  ');
+    $('#run-cap').textContent = fmtS(per) + ' per photo, about ' + fmtS(per * (total - done)) + ' to go';
+    return !state.stopRequested;
+  });
+  const done = state.plan.length;
+  state.lastRun = {
+    photos: done, chosen: total,
+    perPhotoMs: done ? (now() - t0) / done : 0,
+    previewUsed: stats.preview, decodeMs: done ? stats.decode / done : 0, analyseMs: done ? stats.analyse / done : 0, failed: stats.failed,
+  };
+  renderReview();
+  show('review');
+}
+
+/* ---------- Review: the plan, a grid per proposed folder ---------- */
+
+function toCopy() { return state.plan.filter((p) => p.category !== STAY); }
+
+function renderReview() {
+  const box = $('#groups');
+  box.replaceChildren();
+  for (const c of CATEGORIES) {
+    const items = state.plan.map((p, i) => [p, i]).filter(([p]) => p.category === c);
+    if (!items.length) continue;
+    const g = document.createElement('section'); g.className = 'group'; g.dataset.category = c;
+    const head = document.createElement('div'); head.className = 'group-head';
+    const t = document.createElement('span'); t.className = 'edge'; t.textContent = c + ' ▸ ' + items.length;
+    head.append(t);
+    if (c === STAY) { const s = document.createElement('span'); s.className = 'edge note-stay'; s.textContent = 'stay here, not copied'; head.append(s); }
+    const grid = document.createElement('div'); grid.className = 'grid';
+    for (const [p, i] of items) {
+      const b = document.createElement('button');
+      b.className = 'ph' + (p.category !== p.first ? ' changed' : '');
+      b.dataset.index = i;
+      b.setAttribute('aria-label', p.name + ', ' + p.category);
+      if (p.thumb) { const img = document.createElement('img'); img.src = p.thumb; img.alt = ''; b.append(img); }
+      else { const s = document.createElement('span'); s.className = 'bad'; s.textContent = 'no preview'; b.append(s); }
+      b.addEventListener('click', () => openSheet(i));
+      grid.append(b);
+    }
+    g.append(head, grid);
+    box.append(g);
+  }
+  const n = toCopy().length;
+  $('#btn-copy').textContent = 'Copy ' + n;
+  $('#btn-copy').disabled = n === 0;
+  $('#bar-edge').textContent = state.plan.length + ' photos ▸ ' + (state.plan.length - n) + ' stay';
+}
+
+let sheetIndex = -1;
+function openSheet(i) {
+  sheetIndex = i;
+  const p = state.plan[i];
+  $('#sheet-img').src = p.thumb || '';
+  $('#sheet-name').textContent = p.name;
+  $('#sheet-why').textContent = 'filter said ' + p.first + ': ' + p.reason;
+  const box = $('#sheet-targets');
+  box.replaceChildren();
+  for (const c of CATEGORIES) {
+    const b = document.createElement('button');
+    b.textContent = c === STAY ? 'other (stays)' : c;
+    b.dataset.category = c;
+    b.setAttribute('aria-pressed', String(p.category === c));
+    b.addEventListener('click', () => { state.plan[sheetIndex].category = c; closeSheet(); renderReview(); });
+    box.append(b);
+  }
+  $('#veil').hidden = false; $('#sheet').hidden = false;
+}
+function closeSheet() { $('#veil').hidden = true; $('#sheet').hidden = true; sheetIndex = -1; }
+$('#sheet-cancel').addEventListener('click', closeSheet);
+$('#veil').addEventListener('click', closeSheet);
+
+/* ---------- Copy: the safe copy, then the run log ---------- */
+
+// Writing outside core.safeCopy happens only here: the run log, a new file in
+// filter-logs/ that never replaces an existing one. filter_checks.cjs holds the code to that.
+async function writeLog(root, log) {
+  const dir = await root.getDirectoryHandle(LOG_FOLDER, { create: true });
+  let name = 'run-' + stamp() + '.json';
+  for (let k = 2; await core.exists(dir, name); k++) name = 'run-' + stamp() + '-' + k + '.json';
   const h = await dir.getFileHandle(name, { create: true });
   const w = await h.createWritable();
-  await w.write(blob);
+  await w.write(JSON.stringify(log, null, 1));
   await w.close();
-}
-async function removeProbeFile(dir, name) {
-  if (!name.startsWith(PROBE_PREFIX)) throw new Error('refusing to delete a file the probe did not make');
-  await dir.removeEntry(name);
-}
-// Removes the probe's subfolder only if it is empty: without the recursive
-// option the browser refuses to delete a folder that still holds anything.
-async function removeProbeFolder(dir) {
-  await dir.removeEntry(PROBE_FOLDER);
+  return LOG_FOLDER + '/' + name;
 }
 
-// Flip one byte in the middle: same size, different SHA-256. Only the size
-// check would miss it; the hash check must catch it.
-async function flipMiddleByte(file) {
-  const b = new Uint8Array(await file.arrayBuffer());
-  b[b.length >> 1] ^= 0xFF;
-  return b;
-}
-
-async function runMoveTest() {
-  const rows = [];
-  let verdict = 'pass';
-  const add = (k, v, tone) => {
-    rows.push([k, v, tone]);
-    if (tone === 'fail') verdict = 'fail';
-    else if (tone === 'watch' && verdict === 'pass') verdict = 'watch';
-    setSection('move', rows.slice(), null);
-  };
-  const root = folder;
-  const made = [];           // [dir, name] of every probe file still to clean up
-  let sub = null, subMade = false;
-  const times = (m) => ['hash', 'copy', 'readBack', 'delete'].filter((k) => k in m)
-    .map((k) => ({ hash: 'hash ', copy: 'copy ', readBack: 'read back and hash ', delete: 'delete ' })[k] + fmtMs(m[k])).join(', ');
-  try {
-    // 0. Leftovers from an earlier run that was cut off (the app closed mid-test):
-    // any name starting with PROBE_PREFIX. Chrome's half-written temporary files
-    // (name.crswap) start the same way, so they are found too. Listing the
-    // whole folder is slow in a big folder, so it is timed.
-    step('looking for leftovers');
-    let t0 = now();
-    const it = root.values();
-    let listed = 0, stalled = false;
-    for (;;) {
-      const b = await core.readBatch(it, { limit: config.batch, stallMs: config.stallMs });
-      listed += b.entries.length;
-      for (const e of b.entries) if (e.kind !== 'folder' && e.name.startsWith(PROBE_PREFIX)) made.push([root, e.name]);
-      if (b.stalled) { stalled = true; break; }
-      if (b.done) break;
-      step('looking for leftovers, ' + listed + ' listed');
-    }
-    add('Full listing', listed + ' entries in ' + fmtMs(now() - t0) + (stalled ? ', stalled' : ''), stalled ? 'watch' : undefined);
-    try { sub = await root.getDirectoryHandle(PROBE_FOLDER); }
-    catch (e) { if (e && e.name === 'NotFoundError') subMade = true; else throw e; }
-    if (sub) for await (const h of sub.values()) if (h.kind === 'file' && h.name.startsWith(PROBE_PREFIX)) made.push([sub, h.name]);
-    if (made.length) {
-      step('removing leftovers');
-      const old = made.splice(0);
-      let n = 0;
-      for (const [dir, nm] of old) { try { await removeProbeFile(dir, nm); n++; } catch (e) { add('Leftover', nm + ' not removed: ' + errText(e), 'watch'); } }
-      add('Leftovers', n + ' from an earlier run removed: ' + old.map((x) => x[1]).join(', '), 'pass');
-    } else add('Leftovers', 'none');
-
-    // 1. Subfolder
-    step('creating the subfolder');
-    t0 = now();
-    if (!sub) sub = await root.getDirectoryHandle(PROBE_FOLDER, { create: true });
-    add('Subfolder', PROBE_FOLDER + (subMade ? ' created in ' + fmtMs(now() - t0) : ' was already there, kept'), 'pass');
-
-    // 2. Test picture, written into the picked folder like a new photo
-    step('writing the test picture');
-    const blob = await makeTestImage(config.testImageSide);
-    const name = PROBE_PREFIX + 'move-' + stamp() + '.png';
-    t0 = now();
-    await writeProbeFile(root, name, blob);
-    made.push([root, name]);
-    add('Test file', name + ', ' + fmtMB(blob.size) + ', written in ' + fmtMs(now() - t0), 'pass');
-
-    // Finding a file by name: is it slow only in a big folder?
-    step('timing name lookups');
-    t0 = now(); await core.exists(root, name); const lookRoot = now() - t0;
-    t0 = now(); await core.exists(sub, PROBE_PREFIX + 'none.png'); const lookSub = now() - t0;
-    add('Name lookup', fmtMs(lookRoot) + ' in ' + root.name + ', ' + fmtMs(lookSub) + ' in ' + PROBE_FOLDER + '/');
-
-    // 3. The safe move
-    t0 = now();
-    const log = await core.safeMove(root, name, sub, { onStep: (st) => step('safe move: ' + st) });
-    const total = now() - t0;
-    made.length = 0;
-    made.push(log.kept === 'copy' ? [sub, name] : [root, name]);
-    if (log.kept === 'both') made.push([sub, name]);
-    add('Safe move', log.ok ? 'done: copied, checked, original deleted' : 'stopped at ' + log.step + ': ' + log.reason, log.ok ? 'pass' : 'fail');
-    add('Size', log.size + ' B original, ' + log.copySize + ' B copy', log.size === log.copySize ? 'pass' : 'fail');
-    add('SHA-256', short(log.sha256) + (log.copySha256 === log.sha256 ? ' on both' : ' vs copy ' + short(log.copySha256)), log.copySha256 === log.sha256 ? 'pass' : 'fail');
-    if (log.ok) add('Original', 'deleted, and no longer listed in the folder', 'pass');
-    add('Times', times(log.ms) + (log.ok ? ', then the check it is gone' : ''));
-    add('Whole move', fmtMs(total) + (log.ok ? ', ' + (log.size / 1e6 / (total / 1000)).toFixed(2) + ' MB/s' : ''));
-
-    // 4. Forced mismatch: the copy is written with one byte changed
-    step('writing the second test picture');
-    const blob2 = await makeTestImage(config.testImageSide);
-    const name2 = PROBE_PREFIX + 'mismatch-' + stamp() + '.png';
-    await writeProbeFile(root, name2, blob2);
-    made.push([root, name2]);
-    const bad = await core.safeMove(root, name2, sub, { alterCopy: flipMiddleByte, onStep: (st) => step('bad copy test: ' + st) });
-    if (bad.kept !== 'original') made.push([sub, name2]);
-    const caught = !bad.ok && bad.step === 'compare' && bad.kept === 'both';
-    add('Bad copy', caught ? 'caught: ' + bad.reason + ', stopped before any delete' : (bad.ok ? 'NOT caught: the original was deleted' : 'stopped at ' + bad.step + ': ' + bad.reason), caught ? 'pass' : 'fail');
-    step('checking the original');
-    let kept = false;
-    try {
-      const f = await (await root.getFileHandle(name2)).getFile();
-      kept = (await core.sha256(f)) === bad.sha256;
-    } catch (e) { kept = false; }
-    add('Original', kept ? 'kept, unchanged (same SHA-256 as before)' : 'MISSING or changed', kept ? 'pass' : 'fail');
-  } catch (e) {
-    add('Error', errText(e), 'fail');
-  }
-
-  // 5. Clean up: only the probe's own files, then its subfolder if that is now
-  // empty (without the recursive option the browser will not delete a folder
-  // that still holds anything, so a folder with other files in it stays).
-  step('cleaning up');
-  const gone = [], left = [];
-  for (const [dir, n] of made) {
-    try { await removeProbeFile(dir, n); gone.push(n); }
-    catch (e) { if (!(e && e.name === 'NotFoundError')) left.push(n + ' (' + errText(e) + ')'); }
-  }
-  let note = '';
-  if (sub) {
-    try { await removeProbeFolder(root); gone.push(PROBE_FOLDER + '/'); }
-    catch (e) {
-      if (e && e.name === 'InvalidModificationError' && !subMade) note = ', ' + PROBE_FOLDER + '/ kept: it holds other files';
-      else left.push(PROBE_FOLDER + '/ (' + errText(e) + ')');
-    }
-  }
-  add('Clean up', gone.length + ' removed' + note + (left.length ? ', left: ' + left.join(', ') : ''), left.length ? 'watch' : 'pass');
-  setSection('move', rows, verdict);
-}
-
-/* ---------- 03 Reopen ---------- */
-
-let pendingHandle = null;   // a stored handle that needs Gary's say-so again
-
-async function checkReopen() {
-  let rec;
-  try { rec = await idb.get('folder'); }
-  catch (e) { setSection('reopen', [['Stored', 'IndexedDB failed: ' + errText(e), 'fail']], 'fail'); return; }
-  if (!rec || !rec.handle) {
-    setSection('reopen', [['Stored', 'no folder yet: pick one in 01, then close and reopen the app']], null);
-    return;
-  }
-  rec.opens = (rec.opens || 0) + 1;
-  try { await idb.set('folder', rec); } catch (e) { /* the count is a nicety */ }
-  const attempt = { at: Date.now(), open: rec.opens, mins: Math.round((Date.now() - rec.storedAt) / 60000), app: isStandalone() };
-  try { attempt.state = await rec.handle.queryPermission({ mode: 'readwrite' }); }
-  catch (e) { attempt.state = 'error ' + errText(e); }
-  if (attempt.state === 'granted') {
-    folder = rec.handle;
-    attempt.read = await tryRead(rec.handle);
-  } else if (attempt.state === 'prompt') {
-    pendingHandle = rec.handle;
-    $('#btn-ask').hidden = false;
-  }
-  saveAttempt(rec, attempt);
-}
-
-// Can the folder really be listed? One entry is enough. A big folder takes
-// seconds to give its first entry, so this uses the same stall timer as 01.
-async function tryRead(h) {
+async function runCopy() {
+  const items = toCopy();
+  if (!items.length) return;
+  const root = state.folder;
+  const total = items.length;
   const t0 = now();
-  try {
-    const r = await core.nextOrStall(h.values(), config.stallMs);
-    return r.stalled ? 'stalled' : 'ok in ' + fmtMs(now() - t0);
-  } catch (e) { return 'failed, ' + errText(e); }
-}
-
-function saveAttempt(rec, attempt) {
-  const prev = (results.reopen && results.reopen.attempts) || [];
-  const attempts = prev.filter((a) => a.storedAt === rec.storedAt).concat([{ ...attempt, storedAt: rec.storedAt }]).slice(-6);
-  const rows = [['Stored', rec.name + ', picked ' + fmtDate(rec.storedAt) + ' ' + fmtTime(rec.storedAt)]];
-  for (const a of attempts) {
-    const tone = a.state === 'granted' && (!a.read || a.read.startsWith('ok')) ? (a.asked ? 'watch' : 'pass') : a.state === 'prompt' ? 'watch' : 'fail';
-    rows.push(['Open ' + a.open, fmtTime(a.at) + ', ' + a.mins + ' min after picking, ' + (a.app ? 'installed app' : 'browser tab') +
-      ', permission ' + a.state + (a.asked ? ' after asking (' + a.asked + ')' : ' without asking') + (a.read ? ', read ' + a.read : ''), tone]);
-  }
-  const last = attempts[attempts.length - 1];
-  const verdict = rows[rows.length - 1][2];
-  results.reopen = { at: Date.now(), verdict, rows, attempts };
-  saveResults();
-  render('reopen');
-  return last;
-}
-
-async function askAgain() {
-  const h = pendingHandle;
-  if (!h) return;
-  const t0 = now();
-  let state;
-  try { state = await h.requestPermission({ mode: 'readwrite' }); }
-  catch (e) { state = 'error ' + errText(e); }
-  const t = now() - t0;
-  const rec = await idb.get('folder');
-  const attempts = (results.reopen && results.reopen.attempts) || [];
-  const last = attempts[attempts.length - 1];
-  if (rec && last) {
-    attempts.pop();
-    results.reopen.attempts = attempts;
-    const a = { ...last, state, asked: state + ' in ' + fmtMs(t) };
-    if (state === 'granted') { folder = h; a.read = await tryRead(h); $('#btn-ask').hidden = true; pendingHandle = null; }
-    saveAttempt(rec, a);
-  }
-  refreshButtons();
-}
-
-/* ---------- 04 Recognition ---------- */
-
-async function makeClassifier(delegate) {
-  const mp = await import('./vendor/mediapipe/vision_bundle.js');
-  return mp.ImageClassifier.createFromOptions(
-    { wasmLoaderPath: MP.loader, wasmBinaryPath: MP.wasm },
-    { baseOptions: { modelAssetPath: MP.model, delegate }, runningMode: 'IMAGE', maxResults: 3 });
-}
-
-async function runRecogTest() {
-  const rows = [];
-  let verdict = 'pass';
-  const add = (k, v, tone) => {
-    rows.push([k, v, tone]);
-    if (tone === 'fail') verdict = 'fail';
-    else if (tone === 'watch' && verdict === 'pass') verdict = 'watch';
-    setSection('recog', rows.slice(), null);
+  const log = {
+    app: 'filter', version: APP_VERSION, mode: 'copy', folder: root.name,
+    started: new Date().toISOString(), recognition: state.lastRun, items: [],
   };
-  if (!lastBatch) await readFirst();
-  // Photos are read where they are: getFile() gives the bytes, nothing is copied or sent.
-  const photos = (lastBatch ? lastBatch.entries : []).filter((e) => e.kind === 'photo' && /\.(jpe?g|png|webp)$/i.test(e.name)).slice(0, config.recogSample);
-  if (!photos.length) { add('Photos', 'no JPEG, PNG or WebP photos in the first batch', 'fail'); setSection('recog', rows, verdict); return; }
-  add('Photos', photos.length + ' from ' + folder.name + ', decoded at ' + config.decodeWidth + ' px wide');
-  for (const delegate of ['CPU', 'GPU']) {
-    let clf;
-    const t0 = now();
-    try { clf = await makeClassifier(delegate); }
-    catch (e) { add(delegate, 'could not start: ' + errText(e), delegate === 'CPU' ? 'fail' : 'watch'); continue; }
-    add(delegate + ' start', fmtMs(now() - t0) + ' to load the model');
-    const dec = [], cls = [];
-    try {
-      for (let i = 0; i < photos.length; i++) {
-        const a = now();
-        const file = await photos[i].handle.getFile();
-        const bmp = await createImageBitmap(file, { imageOrientation: 'from-image', resizeWidth: config.decodeWidth, resizeQuality: 'medium' });
-        const b = now();
-        let top;
-        try {
-          const r = clf.classify(bmp);
-          top = r.classifications[0].categories[0];
-        } finally { bmp.close(); }
-        const c = now();
-        dec.push(b - a); cls.push(c - b);
-        add(delegate + ' #' + (i + 1), 'decode ' + fmtMs(b - a) + ', classify ' + fmtMs(c - b) + ', top "' + (top ? top.categoryName : 'none') + '" ' + (top ? top.score.toFixed(2) : ''));
+  const out = { copied: 0, skipped: 0, failed: null };
+  $('#copy-count').textContent = '0 / ' + total;
+  $('#copy-fill').style.width = '0';
+  $('#copy-cap').textContent = '';
+  show('copy');
+  const dirs = {};
+  try {
+    for (let i = 0; i < items.length; i++) {
+      const p = items[i];
+      if (!dirs[p.category]) {
+        step('making the ' + p.category + ' folder');
+        $('#copy-cap').textContent = 'Making the ' + p.category + ' folder (slow in a big folder)';
+        dirs[p.category] = await root.getDirectoryHandle(p.category, { create: true });
       }
-      const mean = (a) => a.reduce((s, x) => s + x, 0) / a.length;
-      const warm = cls.length > 1 ? cls.slice(1) : cls;        // the first call includes warm-up
-      const per = mean(dec) + mean(warm);
-      add(delegate + ' mean', 'decode ' + fmtMs(mean(dec)) + ', classify ' + fmtMs(mean(warm)) + ' (first call ' + fmtMs(cls[0]) + '), so about ' + (per * 1000 / 60000).toFixed(1) + ' min per 1000 photos', 'pass');
-    } catch (e) {
-      add(delegate, 'failed: ' + errText(e), delegate === 'CPU' ? 'fail' : 'watch');
-    } finally { clf.close(); }
+      step('copying ' + (i + 1) + ' of ' + total);
+      $('#copy-cap').textContent = p.name + ' ▸ ' + p.category;
+      const r = await core.safeCopy(p.handle, p.name, dirs[p.category], { existing: state.sorted[p.category] });
+      log.items.push({ name: p.name, from: '.', to: p.category, suggested: p.first, reason: p.reason,
+        size: r.size, sha256: r.sha256, copySha256: r.copySha256 || null, ok: r.ok, skipped: r.skipped, step: r.step, problem: r.reason || null });
+      if (r.ok) { out.copied++; state.sorted[p.category].add(p.name); state.sortedAll.add(p.name); }
+      else if (r.skipped) out.skipped++;
+      else { out.failed = r; break; }      // a mismatch or error stops the run; both files are kept
+      $('#copy-count').textContent = (i + 1) + ' / ' + total;
+      $('#copy-fill').style.width = (100 * (i + 1) / total) + '%';
+    }
+  } catch (e) {
+    out.failed = { name: '(folder)', step: 'making a folder', reason: errText(e), copyMade: false };
   }
-  setSection('recog', rows, verdict);
+  log.finished = new Date().toISOString();
+  log.result = { copied: out.copied, skipped: out.skipped, stayed: state.plan.length - total, stopped: out.failed ? out.failed.name + ': ' + out.failed.reason : null };
+  let logName = null, logError = null;
+  step('writing the log');
+  try { logName = await writeLog(root, log); } catch (e) { logError = errText(e); }
+  showDone(out, logName, logError, now() - t0, total);
+}
+
+function showDone(out, logName, logError, ms, total) {
+  const f = out.failed;
+  $('#done-title').textContent = f ? 'Stopped' : 'Done';
+  $('#done-edge').textContent = fmtDate(Date.now()) + ' ▸ ' + fmtTime(Date.now());
+  $('#done-note').textContent = f
+    ? 'Stopped at ' + f.name + ' (' + f.step + '): ' + f.reason + '. The original is untouched.' +
+      (f.copyMade ? ' The faulty copy is in the folder beside it; nothing was deleted.' : '')
+    : '';
+  const changed = state.plan.filter((p) => p.category !== p.first).length;
+  rows($('#done-rows'), [
+    ['Copied', out.copied + ' of ' + total + ', each read back and checked (size and SHA-256)', f ? 'watch' : 'pass'],
+    ['Already there', String(out.skipped)],
+    ['Stayed', (state.plan.length - total) + ' in other, not copied'],
+    ['You changed', changed + ' of ' + state.plan.length],
+    ['Copy time', fmtS(ms)],
+    ['Recognition', state.lastRun ? fmtS(state.lastRun.perPhotoMs) + ' per photo, preview used for ' + state.lastRun.previewUsed + ' of ' + state.lastRun.photos : 'none'],
+    ['Log', logName || 'NOT written: ' + logError, logName ? undefined : 'fail'],
+  ]);
+  show('done');
 }
 
 /* ---------- Wiring ---------- */
 
 $('#btn-pick').addEventListener('click', () => task('picking a folder', pickFolder));
-$('#btn-read').addEventListener('click', () => task('reading 500', readFirst));
-$('#btn-count').addEventListener('click', () => task('counting', countAll));
-$('#btn-stop').addEventListener('click', () => { stopRequested = true; });
-$('#btn-move').addEventListener('click', () => task('safe move test', runMoveTest));
-$('#btn-ask').addEventListener('click', () => task('asking', askAgain));
-$('#btn-recog').addEventListener('click', () => task('timing recognition', runRecogTest));
+$('#btn-allow').addEventListener('click', () => task('asking for access', allowAccess));
+$('#btn-change').addEventListener('click', () => task('picking a folder', pickFolder));
+$('#btn-sort').addEventListener('click', () => task('sorting', runSort));
+$('#btn-stop-run').addEventListener('click', () => { state.stopRequested = true; step('stopping after this photo'); });
+$('#btn-copy').addEventListener('click', () => task('copying', runCopy));
+$('#btn-again').addEventListener('click', () => task('reading the folder', () => openFolder(state.folder)));
 
-$('#btn-copy').addEventListener('click', async () => {
-  const text = reportText();
-  try { await navigator.clipboard.writeText(text); notice('Results copied. Paste them back to Claude.'); }
-  catch (e) {
-    const d = $('details'); d.open = true;
-    const range = document.createRange(); range.selectNodeContents($('#report'));
-    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
-    notice('The clipboard refused. The text is selected below: copy it by hand.');
-  }
-});
-
-// Two taps to clear, so a stray tap does not lose a run's results.
-let clearArmed = 0;
-$('#btn-clear').addEventListener('click', async () => {
-  const b = $('#btn-clear');
-  if (Date.now() - clearArmed > 3000) { clearArmed = Date.now(); b.textContent = 'Sure?'; setTimeout(() => { b.textContent = 'Clear'; }, 3000); return; }
-  clearArmed = 0; b.textContent = 'Clear';
-  results = {};
-  saveResults();
-  setSection('device', await deviceRows(), null);
-  for (const s of SECTIONS) render(s.id);
+// Two taps to start over, so a stray tap does not lose a reviewed plan.
+let restartArmed = 0;
+$('#btn-restart').addEventListener('click', () => {
+  const b = $('#btn-restart');
+  if (Date.now() - restartArmed > 3000) { restartArmed = Date.now(); b.textContent = 'Sure?'; setTimeout(() => { b.textContent = 'Start over'; }, 3000); return; }
+  restartArmed = 0; b.textContent = 'Start over';
+  clearPlan();
+  show('setup');
 });
 
 /* ---------- Service worker: offline and the update prompt ---------- */
@@ -977,6 +1237,7 @@ let updateRequested = false;
 function startServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   const showUpdate = (reg) => notice('Update available.', { label: 'Reload', fn: () => {
+    if (state.busy || state.screen === 'review') { notice('Finish this run first, then reload.'); return; }
     updateRequested = true;
     if (reg.waiting) reg.waiting.postMessage('skip-waiting'); else location.reload();
   } });
@@ -1015,14 +1276,10 @@ $('#btn-install').addEventListener('click', async () => {
 
 /* ---------- Start ---------- */
 
-window.filter = { core, config, reportText, results: () => results, state: () => ({ folder, lastBatch, busy }) };
+window.filter = { core, config, RULES, LABEL_GROUPS, CATEGORIES, recog, state, show };
 
-$('#edge-date').textContent = fmtDate(Date.now()) + ' ▸ v' + APP_VERSION;
-for (const s of SECTIONS) render(s.id);
-deviceRows().then((rows) => setSection('device', rows, null));
-refreshButtons();
-status('no folder yet');
-window.filterReady = task('checking the stored folder', checkReopen);
+show('start');
+window.filterReady = task('opening', boot);
 startServiceWorker();
 </script>
 </body>

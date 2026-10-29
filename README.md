@@ -2,7 +2,7 @@
 
 Sorts the photos and videos on an Android phone into folders by what is in them. Installed from this site as an app (PWA). Built for one person's use.
 
-Not built yet: the plan is in CLAUDE.md. What is here now is phase F0, a probe: a page that tests what the phone allows (opening the camera folder, a safe copy and delete on a test file it makes itself, keeping access after the app is closed, and how fast recognition runs). It sorts nothing and never moves a real photo or video.
+Built so far: photos, sorted by what is in them (people, pets, food, screenshots, documents, scenery, other), in Review mode, copy only. Pick a folder, choose how many of the newest photos to sort, check the plan as a grid per folder, move any photo that is in the wrong place, then copy. The copies go into subfolders of the picked folder; photos in "other" stay where they are. Nothing is moved or deleted yet. The rest of the plan is in CLAUDE.md.
 
 ## What it will do
 - Pick a folder on the phone; filter sorts its photos and videos into subfolders.
@@ -19,5 +19,5 @@ Copy is the default. A move copies the file, checks the copy is identical, and o
 The app has no build step. The tests need Node and Playwright (`npm install` once).
 
 - `node filter_checks.cjs`: static checks (no other websites, allowed files only, pinned versions and hashes of everything vendored).
-- `node filter_behave.cjs`: runs the app in Chromium against a fake folder tree, including copy, verify, delete and a forced bad copy.
+- `node filter_behave.cjs`: runs the app in Chromium against a fake folder tree of synthetic pictures: where each photo lands, the copy and its check, and a bad copy that must stop the run.
 - `bash filter_mutate.sh`: plants small bugs in the file-safety code and checks the tests catch every one.

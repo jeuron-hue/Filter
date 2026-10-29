@@ -3,20 +3,22 @@
 //
 // The File System Access API, canvas, IndexedDB, wasm and service workers only
 // behave properly in a real browser, so this suite serves the repo on localhost
-// and drives the probe.
+// and drives the app.
 //
 // The fake folder tree: in place of the real folder picker, each test builds a
 // DCIM/Camera folder in Chromium's private origin file system (OPFS). Its
-// handles are real FileSystemDirectoryHandles, so the copy, read back and delete
-// go through the browser's own file code. Wrappers on top of it plant faults: a
-// disk that changes a byte, a short write, a failing or silent delete, an
-// original that changes mid-move, a listing that stalls. Every file is
-// synthetic (random bytes, coloured shapes); no real photo is used.
+// handles are real FileSystemDirectoryHandles, so the copy and the read back go
+// through the browser's own file code. Wrappers on top of it plant faults: a
+// disk that changes a byte, a short write, a write that fails part way, a
+// listing that stalls. Every picture is synthetic (coloured shapes, a page of
+// text, screen-sized PNGs, planted camera data and previews); no real photo is
+// used. The two models are swapped for a stand-in that answers by file name, so
+// where each photo lands can be checked exactly; one test runs the real models.
 //
 // Run:            node filter_behave.cjs
 // Core only:      FILTER_ONLY=core node filter_behave.cjs   (used by filter_mutate.sh)
 // Other page:     FILTER_HTML=/path/to/mutant.html node filter_behave.cjs
-// Filter by name: FILTER_GREP=move node filter_behave.cjs
+// Filter by name: FILTER_GREP=copy node filter_behave.cjs
 
 'use strict';
 const fs = require('fs');
@@ -107,30 +109,87 @@ function pageFixtures() {
       for (let i = 0; i < n; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; b[i] = x & 255; }
       return b;
     },
-    // A decodable JPEG of a coloured shape on a plain ground.
-    async jpeg(i) {
-      const c = new OffscreenCanvas(160, 120);
+    // A picture of a coloured shape on a plain ground, or one flat colour.
+    async picture(i, { w = 320, h = 240, type = 'image/jpeg', flat = null } = {}) {
+      const c = new OffscreenCanvas(w, h);
       const x = c.getContext('2d');
-      x.fillStyle = ['#2d6a4f', '#1d3557', '#e9c46a', '#8d99ae', '#bc4749', '#6d597a', '#264653', '#f4a261'][i % 8];
-      x.fillRect(0, 0, 160, 120);
-      x.fillStyle = ['#ffffff', '#e63946', '#000000', '#ffb703'][i % 4];
-      x.beginPath(); x.arc(40 + i * 10, 60, 25 + i, 0, 7); x.fill();
-      x.fillRect(100, 20 + i * 5, 40, 30);
-      return c.convertToBlob({ type: 'image/jpeg', quality: 0.9 });
+      x.fillStyle = flat || ['#2d6a4f', '#1d3557', '#e9c46a', '#8d99ae', '#bc4749', '#6d597a', '#264653', '#f4a261'][i % 8];
+      x.fillRect(0, 0, w, h);
+      if (!flat) {
+        x.fillStyle = ['#ffffff', '#e63946', '#000000', '#ffb703'][i % 4];
+        x.beginPath(); x.arc(w * 0.3, h * 0.5, h * 0.25, 0, 7); x.fill();
+        x.fillRect(w * 0.6, h * 0.2, w * 0.25, h * 0.3);
+      }
+      return c.convertToBlob({ type, quality: 0.9 });
     },
-    // The standard fake camera folder: 8 photos, 4 videos, 3 hidden, 3 other, 2 subfolders.
+    // A page of black text on white.
+    async textPage(w = 600, h = 800) {
+      const c = new OffscreenCanvas(w, h);
+      const x = c.getContext('2d');
+      x.fillStyle = '#ffffff'; x.fillRect(0, 0, w, h);
+      x.fillStyle = '#111111'; x.font = '22px sans-serif';
+      for (let y = 50; y < h - 30; y += 34) x.fillText('Receipt 29/10/26 item 4.50 total 12.80 paid card', 30, y);
+      return c.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
+    },
+    // Plant camera data (EXIF) straight after the start of a JPEG: make, model,
+    // orientation, and optionally a preview picture in IFD1. le: Intel byte order.
+    async withExif(jpeg, { make = 'Google', model = 'Pixel 9 Pro XL', orientation = 1, thumb = null, le = false } = {}) {
+      const main = new Uint8Array(await jpeg.arrayBuffer());
+      const tb = thumb ? new Uint8Array(await thumb.arrayBuffer()) : null;
+      const enc = new TextEncoder();
+      const mk = enc.encode(make + '\0'), md = enc.encode(model + '\0');
+      const ifd0 = 8, n0 = 3, strAt = ifd0 + 2 + n0 * 12 + 4;
+      const mkAt = strAt, mdAt = mkAt + (mk.length > 4 ? mk.length : 0);
+      let ifd1 = mdAt + (md.length > 4 ? md.length : 0); ifd1 += ifd1 & 1;
+      const thAt = ifd1 + (tb ? 2 + 2 * 12 + 4 : 0);
+      const t = new Uint8Array(thAt + (tb ? tb.length : 0));
+      const dv = new DataView(t.buffer);
+      t[0] = t[1] = le ? 0x49 : 0x4D; dv.setUint16(2, 42, le); dv.setUint32(4, ifd0, le);
+      const head = (at, tag, type, count) => { dv.setUint16(at, tag, le); dv.setUint16(at + 2, type, le); dv.setUint32(at + 4, count, le); };
+      const str = (at, tag, bytes, where) => { head(at, tag, 2, bytes.length); if (bytes.length <= 4) t.set(bytes, at + 8); else { dv.setUint32(at + 8, where, le); t.set(bytes, where); } };
+      dv.setUint16(ifd0, n0, le);
+      str(ifd0 + 2, 0x010F, mk, mkAt);
+      str(ifd0 + 14, 0x0110, md, mdAt);
+      head(ifd0 + 26, 0x0112, 3, 1); dv.setUint16(ifd0 + 34, orientation, le);
+      dv.setUint32(ifd0 + 2 + n0 * 12, tb ? ifd1 : 0, le);
+      if (tb) {
+        dv.setUint16(ifd1, 2, le);
+        head(ifd1 + 2, 0x0201, 4, 1); dv.setUint32(ifd1 + 10, thAt, le);
+        head(ifd1 + 14, 0x0202, 4, 1); dv.setUint32(ifd1 + 22, tb.length, le);
+        dv.setUint32(ifd1 + 26, 0, le);
+        t.set(tb, thAt);
+      }
+      const payload = new Uint8Array(6 + t.length);
+      payload.set([0x45, 0x78, 0x69, 0x66, 0, 0]); payload.set(t, 6);
+      const seg = new Uint8Array(4 + payload.length);
+      seg[0] = 0xFF; seg[1] = 0xE1; seg[2] = (payload.length + 2) >> 8; seg[3] = (payload.length + 2) & 255; seg.set(payload, 4);
+      const out = new Uint8Array(main.length + seg.length);
+      out.set(main.subarray(0, 2)); out.set(seg, 2); out.set(main.subarray(2), 2 + seg.length);
+      return new Blob([out], { type: 'image/jpeg' });
+    },
+    // The standard fake camera folder. Photo names carry dates, newest first;
+    // what the stand-in models "see" in each is in __answers.
     async camera() {
       const cam = await this.dir('DCIM/Camera');
-      for (let i = 0; i < 8; i++) await this.put(cam, 'PXL_20261029_10' + String(i).padStart(4, '0') + '000.jpg', await this.jpeg(i));
-      for (let i = 0; i < 4; i++) await this.put(cam, 'PXL_20261029_11' + String(i).padStart(4, '0') + '000.mp4', this.noise(3000 + i, i + 7));
-      await this.put(cam, '.trashed-1767225600-PXL_20261001_090000000.jpg', await this.jpeg(9));
-      await this.put(cam, '.trashed-1767225601-PXL_20261001_090100000.jpg', await this.jpeg(10));
-      await this.put(cam, '.pending-1767225602-PXL_20261029_120000000.mp4', this.noise(500, 3));
+      const A = window.__answers = {};
+      const photo = async (name, i, answer, opts = {}) => {
+        const pic = opts.blob || await this.picture(i);
+        await this.put(cam, name, await this.withExif(pic));
+        A[name] = answer;
+      };
+      await photo('PXL_20261029_101000000.jpg', 0, { faces: [{ w: 0.3, h: 0.35, score: 0.95 }] });
+      await photo('PXL_20261029_100900000.jpg', 1, { labels: [{ index: 207, name: 'golden retriever', score: 0.4 }, { index: 208, name: 'Labrador retriever', score: 0.2 }] });
+      await photo('PXL_20261029_100800000.jpg', 2, { labels: [{ index: 963, name: 'pizza', score: 0.7 }] });
+      await photo('PXL_20261029_100700000.jpg', 3, { labels: [{ index: 978, name: 'seashore', score: 0.3 }, { index: 975, name: 'lakeside', score: 0.1 }] });
+      await photo('PXL_20261029_100600000.jpg', 4, {}, { blob: await this.textPage() });
+      await photo('PXL_20261029_100500000.jpg', 5, { labels: [{ index: 600, name: 'hook', score: 0.12 }] });
+      await this.put(cam, 'Screenshot_20261029-100400.png', await this.picture(6, { w: 540, h: 1200, type: 'image/png' }));
+      await this.put(cam, 'IMG_20261029_100300.png', await this.picture(7, { w: 1344, h: 2992, type: 'image/png' }));
+      await photo('PXL_20261029_100200000.jpg', 6, { faces: [{ w: 0.2, h: 0.2, score: 0.9 }, { w: 0.15, h: 0.18, score: 0.8 }] });
+      await photo('PXL_20250101_120000000.jpg', 7, { labels: [{ index: 281, name: 'tabby', score: 0.6 }] });
+      for (let i = 0; i < 2; i++) await this.put(cam, 'PXL_20261029_11' + i + '000000.mp4', this.noise(3000 + i, i + 7));
+      await this.put(cam, '.trashed-1767225600-PXL_20261001_090000000.jpg', await this.picture(9));
       await this.put(cam, 'notes.txt', new TextEncoder().encode('not a photo'));
-      await this.put(cam, 'edit.json', new TextEncoder().encode('{}'));
-      await this.put(cam, 'desktop.ini', new TextEncoder().encode('[x]'));
-      await cam.getDirectoryHandle('Raw', { create: true });
-      await cam.getDirectoryHandle('.thumbnails', { create: true });
       return cam;
     },
     // A big folder of empty files: photos, videos, hidden and other in the given numbers.
@@ -146,17 +205,11 @@ function pageFixtures() {
       return d;
     },
     // A folder handle with a fault planted. ops records every call, labelled.
-    wrap(dir, fault, ops = [], label = dir.name) {
-      const seen = {};
+    // sub: faults for subfolders by name, e.g. { pets: 'flip' }.
+    wrap(dir, fault, ops = [], label = dir.name, sub = {}) {
       const wrapFile = (fh, name) => ({
         kind: 'file', name: fh.name,
-        async getFile() {
-          ops.push(label + ' getFile ' + name);
-          seen[name] = (seen[name] || 0) + 1;
-          const f = await fh.getFile();
-          if (fault === 'changesOriginal' && seen[name] > 1) return new File([f], f.name, { lastModified: f.lastModified + 1000 });
-          return f;
-        },
+        async getFile() { ops.push(label + ' getFile ' + name); return fh.getFile(); },
         async createWritable(o) {
           ops.push(label + ' createWritable ' + name);
           if (fault === 'throwWrite') throw new DOMException('disk full', 'QuotaExceededError');
@@ -174,24 +227,32 @@ function pageFixtures() {
           };
         },
       });
+      const self = this;
       return {
         kind: 'directory', name: dir.name,
         async getFileHandle(n, o) { ops.push(label + ' getFileHandle ' + n + (o && o.create ? ' create' : '')); return wrapFile(await dir.getFileHandle(n, o), n); },
-        getDirectoryHandle: (n, o) => dir.getDirectoryHandle(n, o),
-        async removeEntry(n, o) {
-          ops.push(label + ' removeEntry ' + n);
-          if (fault === 'removeFails') throw new DOMException('not allowed', 'NotAllowedError');
-          if (fault === 'removeNoop') return undefined;
-          return dir.removeEntry(n, o);
+        async getDirectoryHandle(n, o) {
+          const d = await dir.getDirectoryHandle(n, o);
+          return sub[n] ? self.wrap(d, sub[n], ops, n) : d;
         },
         values() {
           const it = dir.values();
           if (!fault || !fault.startsWith('stallAfter')) return it;
-          const n = +fault.slice(10); let i = 0;
-          return { next() { return i++ >= n ? new Promise(() => {}) : it.next(); }, [Symbol.asyncIterator]() { return this; } };
+          const k = +fault.slice(10); let i = 0;
+          return { next() { return i++ >= k ? new Promise(() => {}) : it.next(); }, [Symbol.asyncIterator]() { return this; } };
         },
         async queryPermission() { return 'granted'; },
       };
+    },
+    // The pixels of an image at a blob: address (a review thumbnail), through
+    // an <img>, as the page's CSP allows images from blob: but not fetch.
+    async look(url) {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      const c = new OffscreenCanvas(img.naturalWidth, img.naturalHeight);
+      const x = c.getContext('2d'); x.drawImage(img, 0, 0);
+      return { w: img.naturalWidth, h: img.naturalHeight, centre: Array.from(x.getImageData(img.naturalWidth >> 1, img.naturalHeight >> 1, 1, 1).data) };
     },
   };
   window.showDirectoryPicker = async () => {
@@ -211,7 +272,7 @@ function pageFixtures() {
 // stored folder handle is read back from IndexedDB (seen with Playwright 1.63,
 // 29/10/26); a normal profile, like the one on the phone, does not. Tests that
 // reopen the app after picking a folder need it.
-async function newApp({ sw = false, clipboard = false, persistent = false } = {}) {
+async function newApp({ sw = false, persistent = false, models = 'stand-in' } = {}) {
   const opts = { viewport: { width: 412, height: 915 }, deviceScaleFactor: 2, hasTouch: true, serviceWorkers: sw ? 'allow' : 'block' };
   let ctx;
   if (persistent) {
@@ -220,7 +281,6 @@ async function newApp({ sw = false, clipboard = false, persistent = false } = {}
     const close = ctx.close.bind(ctx);
     ctx.close = async () => { await close(); fs.rmSync(dir, { recursive: true, force: true }); };
   } else ctx = await browser.newContext(opts);
-  if (clipboard) await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE });
   ctx.on('request', (r) => {
     const u = new URL(r.url());
     if (u.protocol === 'blob:' || u.protocol === 'data:') return;
@@ -231,28 +291,58 @@ async function newApp({ sw = false, clipboard = false, persistent = false } = {}
   page.errors = [];
   page.on('pageerror', (e) => page.errors.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error') page.errors.push(m.text()); });
+  page.models = models;
   await page.goto(BASE + '/filter.html');
   await ready(page);
   return { ctx, page };
 }
 
-const ready = (page) => page.evaluate(() => window.filterReady);
-const idle = (page) => page.waitForFunction(() => window.filter && !window.filter.state().busy, null, { timeout: 120000 });
+// Wait for the app to start; swap in the stand-in models unless the test wants the real ones.
+const ready = async (page) => {
+  await page.evaluate(() => window.filterReady);
+  if (page.models === 'stand-in') await page.evaluate(() => { window.filter.recog.override = (e) => (window.__answers || {})[e.name] || {}; });
+};
+const idle = (page) => page.waitForFunction(() => window.filter && !window.filter.state.busy, null, { timeout: 120000 });
 async function run(page, button) { await page.click(button); await idle(page); }
-async function section(page, id) {
-  return page.evaluate((id) => {
-    const s = window.filter.results()[id];
-    if (!s) return null;
-    return { verdict: s.verdict, rows: Object.fromEntries(s.rows.map(([k, v, t]) => [k, { v, t }])), list: s.rows };
-  }, id);
-}
-// Choose the folder the fake picker will hand over, then press "Pick folder".
-async function pick(page, p) {
-  await page.evaluate(async (p) => { window.__pick = await window.__fx.dir(p); }, p);
+const screen = (page) => page.evaluate(() => window.filter.state.screen);
+const rowsOf = (page, sel) => page.evaluate((sel) => Object.fromEntries([...document.querySelectorAll(sel + ' .r')].map((r) => [r.children[0].textContent, r.children[1].textContent])), sel);
+const text = (page, sel) => page.evaluate((sel) => document.querySelector(sel).textContent, sel);
+// The plan as { category: [names] }.
+const plan = (page) => page.evaluate(() => {
+  const out = {};
+  for (const p of window.filter.state.plan) (out[p.category] = out[p.category] || []).push(p.name);
+  return out;
+});
+// Seed the standard camera folder and pick it. sub: faults for filter's subfolders.
+async function openCamera(page, sub = null) {
+  await page.evaluate(async (sub) => {
+    const cam = await window.__fx.camera();
+    window.__pick = sub ? window.__fx.wrap(cam, null, [], cam.name, sub) : cam;
+  }, sub);
   await run(page, '#btn-pick');
 }
+async function sort(page, n) {
+  if (n) await page.fill('#newest', String(n));
+  await run(page, '#btn-sort');
+}
+const camTree = (page) => page.evaluate(async () => window.__fx.tree(await window.__fx.dir('DCIM/Camera')));
+const onlyRoot = (tree) => Object.fromEntries(Object.entries(tree).filter(([k]) => !k.includes('/')));
+// The files (not the folder entry itself) directly inside a subfolder, as names.
+const filesIn = (tree, dir) => Object.keys(tree).filter((k) => k.startsWith(dir + '/') && k !== dir + '/').map((k) => k.slice(dir.length + 1)).sort();
+const readLog = (page, name) => page.evaluate(async (n) => JSON.parse(await (await (await (await window.__fx.dir('DCIM/Camera/filter-logs')).getFileHandle(n)).getFile()).text()), name);
 
-/* ---------- Core: names into kinds ---------- */
+const EXPECTED_PLAN = {
+  people: ['PXL_20261029_101000000.jpg', 'PXL_20261029_100200000.jpg'],
+  pets: ['PXL_20261029_100900000.jpg', 'PXL_20250101_120000000.jpg'],
+  food: ['PXL_20261029_100800000.jpg'],
+  scenery: ['PXL_20261029_100700000.jpg'],
+  documents: ['PXL_20261029_100600000.jpg'],
+  other: ['PXL_20261029_100500000.jpg'],
+  screenshots: ['Screenshot_20261029-100400.png', 'IMG_20261029_100300.png'],
+};
+const sortPlan = (p) => Object.fromEntries(Object.keys(p).sort().map((k) => [k, p[k].slice().sort()]));
+
+/* ---------- Core: names, folders, hashes ---------- */
 
 test('kindOf: photos, videos, Android hidden files and other', async () => {
   const { ctx, page } = await newApp();
@@ -269,8 +359,6 @@ test('kindOf: photos, videos, Android hidden files and other', async () => {
     'other', 'other', 'other', 'other', 'other', 'other'], 'kinds');
   await ctx.close();
 }, { core: true });
-
-/* ---------- Core: reading a folder in batches ---------- */
 
 test('readBatch stops at the limit, carries on from there, and counts every kind exactly', async () => {
   const { ctx, page } = await newApp();
@@ -308,509 +396,696 @@ test('readBatch times the first entry and the whole batch', async () => {
     const e = await c.readBatch((await window.__fx.dir('Empty')).values(), { limit: 500, stallMs: 5000, now });
     return { first: b.firstMs, ms: b.ms, n: b.entries.length, done: b.done, eFirst: e.firstMs, eDone: e.done, eN: e.entries.length };
   });
-  // Clock calls: start (10), first entry (20), end (30).
   eq([r.first, r.ms, r.n, r.done], [10, 20, 3, true], 'first entry 10 ms after the start, batch 20 ms');
   eq([r.eFirst, r.eDone, r.eN], [null, true, 0], 'an empty folder');
   await ctx.close();
 }, { core: true });
 
-test('readBatch reports a stall instead of hanging', async () => {
+test('readBatch reports a stall instead of hanging, and passes listing errors on', async () => {
   const { ctx, page } = await newApp();
   const r = await page.evaluate(async () => {
     const d = await window.__fx.big('Stall', { photo: 30, video: 0, hidden: 0, other: 0 });
     const t0 = performance.now();
     const b = await window.filter.core.readBatch(window.__fx.wrap(d, 'stallAfter7').values(), { limit: 500, stallMs: 250 });
-    return { n: b.entries.length, stalled: b.stalled, done: b.done, wall: performance.now() - t0, ms: b.ms };
+    const wall = performance.now() - t0;
+    let err = 'no error';
+    try { await window.filter.core.readBatch({ next: () => Promise.reject(new DOMException('gone', 'NotFoundError')) }, { limit: 5, stallMs: 1000 }); }
+    catch (e) { err = e.name; }
+    return { n: b.entries.length, stalled: b.stalled, done: b.done, wall, err };
   });
   eq([r.n, r.stalled, r.done], [7, true, false], 'seven entries, then a stall');
   assert(r.wall >= 240 && r.wall < 1000, 'gave up after about 250 ms, took ' + r.wall);
-  assert(r.ms >= 240, 'batch time includes the wait, got ' + r.ms);
+  eq(r.err, 'NotFoundError', 'listing error passed on');
   await ctx.close();
 }, { core: true });
 
-test('readBatch passes a listing error on', async () => {
-  const { ctx, page } = await newApp();
-  const r = await page.evaluate(async () => {
-    const it = { next: () => Promise.reject(new DOMException('gone', 'NotFoundError')) };
-    try { await window.filter.core.readBatch(it, { limit: 5, stallMs: 1000 }); return 'no error'; }
-    catch (e) { return e.name; }
-  });
-  eq(r, 'NotFoundError', 'error');
-  await ctx.close();
-}, { core: true });
-
-/* ---------- Core: hashing and lookups ---------- */
-
-test('sha256 matches Node for a known string and for random bytes', async () => {
+test('sha256 matches Node for a known string and for random bytes; exists sees files and folders', async () => {
   const { ctx, page } = await newApp();
   const r = await page.evaluate(async () => {
     const c = window.filter.core;
-    const abc = await c.sha256(new Blob([new TextEncoder().encode('abc')]));
-    const empty = await c.sha256(new Blob([]));
-    const n = window.__fx.noise(100003, 42);
-    return { abc, empty, noise: await c.sha256(new Blob([n])), bytes: Array.from(n.subarray(0, 8)) };
-  });
-  eq(r.abc, 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', 'sha256("abc")');
-  eq(r.empty, 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 'sha256 of nothing');
-  // Rebuild the same noise in Node and hash it independently.
-  const b = Buffer.alloc(100003); let x = 42;
-  for (let i = 0; i < b.length; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; b[i] = x & 255; }
-  eq(Array.from(b.subarray(0, 8)), r.bytes, 'same noise');
-  eq(r.noise, sha(b), 'sha256 of 100 kB of noise');
-  await ctx.close();
-}, { core: true });
-
-test('exists: a file, a missing name, and a folder of that name', async () => {
-  const { ctx, page } = await newApp();
-  const r = await page.evaluate(async () => {
     const d = await window.__fx.dir('Ex');
     await window.__fx.put(d, 'a.jpg', new Uint8Array([1]));
     await d.getDirectoryHandle('sub', { create: true });
-    const c = window.filter.core;
-    return [await c.exists(d, 'a.jpg'), await c.exists(d, 'b.jpg'), await c.exists(d, 'sub')];
+    return {
+      abc: await c.sha256(new Blob([new TextEncoder().encode('abc')])),
+      empty: await c.sha256(new Blob([])),
+      noise: await c.sha256(new Blob([window.__fx.noise(100003, 42)])),
+      exists: [await c.exists(d, 'a.jpg'), await c.exists(d, 'b.jpg'), await c.exists(d, 'sub')],
+    };
   });
-  eq(r, [true, false, true], 'exists');
+  eq(r.abc, 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', 'sha256("abc")');
+  eq(r.empty, 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 'sha256 of nothing');
+  const b = Buffer.alloc(100003); let x = 42;
+  for (let i = 0; i < b.length; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; b[i] = x & 255; }
+  eq(r.noise, sha(b), 'sha256 of 100 kB of noise');
+  eq(r.exists, [true, false, true], 'exists');
   await ctx.close();
 }, { core: true });
 
-/* ---------- Core: the safe move ---------- */
+/* ---------- Core: choosing the newest photos ---------- */
 
-// Runs core.safeMove in the page on a fresh A -> A/to pair holding one file of
-// random bytes. fault: { from, to } names a fault for either side.
-async function moveCase(page, { size = 300000, fault = {}, alter = false, clash = false, missing = false } = {}) {
-  return page.evaluate(async ({ size, fault, alter, clash, missing }) => {
+test('dateKey reads the date from Pixel, camera and screenshot names', async () => {
+  const { ctx, page } = await newApp();
+  const got = await page.evaluate(() => ['PXL_20261029_101500123.jpg', 'IMG_20250101_000001.jpg', 'Screenshot_20261029-101500.png',
+    'PXL_20261029_101500123.RAW-01.MP.COVER.jpg', 'VID_20240229235959.mp4', 'photo.jpg', 'PXL_2026.jpg', 'IMG_20261329_101500.jpg',
+    'IMG_20261000_101500.jpg', 'IMG_20261032_101500.jpg', 'scan 20261029 101500.jpg'].map((n) => window.filter.core.dateKey(n)));
+  eq(got, ['20261029101500', '20250101000001', '20261029101500', '20261029101500', '20240229235959', null, null, null, null, null, null], 'keys');
+  await ctx.close();
+}, { core: true });
+
+test('pickNewest takes the newest not yet sorted, undated last, ties by name', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const p = (name) => ({ name });
+    // Same-time and undated names are given in ascending order, so only the name tie-break puts them right.
+    const photos = ['PXL_20261029_101500000.jpg', 'IMG_20261030_090000.jpg', 'beach.jpg', 'PXL_20250101_120000000.jpg',
+      'holiday.jpg', 'PXL_20261031_080000000.jpg', 'PXL_20261030_090000000.jpg'].map(p);
+    const c = window.filter.core;
+    const all = c.pickNewest(photos, new Set(), 10);
+    const some = c.pickNewest(photos, new Set(['PXL_20261031_080000000.jpg', 'beach.jpg']), 3);
+    const none = c.pickNewest(photos, new Set(), 0);
+    return { all: all.chosen.map((x) => x.name), some: some.chosen.map((x) => x.name), counts: [some.fresh, some.sorted], none: none.chosen.length };
+  });
+  eq(r.all, ['PXL_20261031_080000000.jpg', 'PXL_20261030_090000000.jpg', 'IMG_20261030_090000.jpg', 'PXL_20261029_101500000.jpg',
+    'PXL_20250101_120000000.jpg', 'holiday.jpg', 'beach.jpg'], 'newest first, same time by name, undated last');
+  eq(r.some, ['PXL_20261030_090000000.jpg', 'IMG_20261030_090000.jpg', 'PXL_20261029_101500000.jpg'], 'skips the sorted ones, takes 3');
+  eq(r.counts, [5, 2], 'fresh and sorted counts');
+  eq(r.none, 0, 'n = 0 takes nothing');
+  await ctx.close();
+}, { core: true });
+
+/* ---------- Core: reading a photo's header ---------- */
+
+test('imageInfo reads size, camera, orientation and the preview from a JPEG, both byte orders', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(async () => {
     const fx = window.__fx, c = window.filter.core;
-    const tag = 'M' + Math.random().toString(36).slice(2, 8);
+    const thumb = await fx.picture(1, { w: 320, h: 240 });
+    const tb = new Uint8Array(await thumb.arrayBuffer());
+    const out = {};
+    for (const le of [false, true]) {
+      const j = new Uint8Array(await (await fx.withExif(await fx.picture(0, { w: 1600, h: 1200 }), { orientation: 6, thumb, le })).arrayBuffer());
+      const info = c.imageInfo(j);
+      const slice = j.subarray(info.thumb.start, info.thumb.start + info.thumb.length);
+      out[le ? 'le' : 'be'] = { format: info.format, w: info.width, h: info.height, make: info.make, model: info.model, o: info.orientation,
+        thumbSame: slice.length === tb.length && slice.every((x, i) => x === tb[i]) };
+    }
+    const short = c.imageInfo(new Uint8Array(await (await fx.withExif(await fx.picture(0), { make: 'LG', model: 'G8', orientation: 3 })).arrayBuffer()));
+    out.short = [short.make, short.model, short.orientation, short.thumb, short.width, short.height];
+    const bare = c.imageInfo(new Uint8Array(await (await fx.picture(2, { w: 400, h: 300 })).arrayBuffer()));
+    out.bare = [bare.format, bare.width, bare.height, bare.make, bare.orientation, bare.thumb];
+    const png = c.imageInfo(new Uint8Array(await (await fx.picture(3, { w: 1344, h: 2992, type: 'image/png' })).arrayBuffer()));
+    out.png = [png.format, png.width, png.height, png.make];
+    out.webp = c.imageInfo(new Uint8Array(await (await fx.picture(3, { type: 'image/webp' })).arrayBuffer())).format;
+    out.junk = c.imageInfo(fx.noise(5000, 3)).format;
+    // Cut off part way through the camera data: no crash, no wild preview.
+    const full = new Uint8Array(await (await fx.withExif(await fx.picture(0, { w: 1600, h: 1200 }), { thumb })).arrayBuffer());
+    const cut = c.imageInfo(full.subarray(0, 300));
+    out.cut = [cut.format, cut.make, cut.thumb];
+    const bad = full.slice(); bad[15] = 0x99;   // break the TIFF magic number (42)
+    out.bad = c.imageInfo(bad).make;
+    const fill = new Uint8Array(full.length + 1); fill.set(full.subarray(0, 2)); fill[2] = 0xFF; fill.set(full.subarray(2), 3);   // a fill byte, allowed before any marker
+    const fi = c.imageInfo(fill);
+    out.fill = [fi.make, fi.width];
+    out.o9 = c.imageInfo(new Uint8Array(await (await fx.withExif(await fx.picture(0), { orientation: 9 })).arrayBuffer())).orientation;
+    return out;
+  });
+  for (const k of ['be', 'le']) eq(r[k], { format: 'jpeg', w: 1600, h: 1200, make: 'Google', model: 'Pixel 9 Pro XL', o: 6, thumbSame: true }, k);
+  eq(r.short, ['LG', 'G8', 3, null, 320, 240], 'short strings stored inside the entry');
+  eq(r.bare, ['jpeg', 400, 300, null, 1, null], 'no camera data');
+  eq(r.png, ['png', 1344, 2992, null], 'PNG size');
+  eq(r.webp, 'webp', 'WebP');
+  eq(r.junk, null, 'not a picture');
+  eq(r.cut, ['jpeg', 'Google', null], 'cut short: what was read, no preview');
+  eq(r.bad, null, 'broken camera data ignored');
+  eq(r.fill, ['Google', 1600], 'fill bytes before a marker are skipped');
+  eq(r.o9, 1, 'an orientation outside 1 to 8 is ignored');
+  await ctx.close();
+}, { core: true });
+
+test('orientMatrix turns each EXIF orientation upright; orientedSize swaps for quarter turns', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const c = window.filter.core, w = 40, h = 30, out = {};
+    for (let o = 1; o <= 8; o++) {
+      const [a, b, cc, d, e, f] = c.orientMatrix(o, w, h);
+      const map = ([x, y]) => [a * x + cc * y + e, b * x + d * y + f];
+      const pts = [[0, 0], [w, 0], [0, h], [w, h]].map(map);
+      const s = c.orientedSize(w, h, o);
+      out[o] = { origin: map([0, 0]), along: map([w, 0]), fits: pts.every(([x, y]) => x >= 0 && y >= 0 && x <= s.w && y <= s.h), size: [s.w, s.h] };
+    }
+    out.bad = c.orientMatrix(9, w, h);
+    return out;
+  });
+  // Where the source's top-left corner and top-right corner land, per the EXIF definitions.
+  const want = { 1: [[0, 0], [40, 0]], 2: [[40, 0], [0, 0]], 3: [[40, 30], [0, 30]], 4: [[0, 30], [40, 30]],
+    5: [[0, 0], [0, 40]], 6: [[30, 0], [30, 40]], 7: [[30, 40], [30, 0]], 8: [[0, 40], [0, 0]] };
+  for (let o = 1; o <= 8; o++) {
+    eq([r[o].origin, r[o].along], want[o], 'orientation ' + o + ': where the top row lands');
+    assert(r[o].fits, 'orientation ' + o + ': the picture fits the canvas');
+    eq(r[o].size, o >= 5 ? [30, 40] : [40, 30], 'orientation ' + o + ' size');
+  }
+  eq(r.bad, [1, 0, 0, 1, 0, 0], 'unknown orientation left as it is');
+  await ctx.close();
+}, { core: true });
+
+/* ---------- Core: the sorting rules ---------- */
+
+test('tiles and facesFrom: five looks, faces measured against the whole photo, never counted twice', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const c = window.filter.core;
+    const t = c.tiles(500, 400);
+    const runs = [
+      { dets: [{ w: 100, h: 90, score: 0.9 }, { w: 30, h: 30, score: 0.95 }, { w: 80, h: 80, score: 0.55 }] },   // one big enough and sure enough
+      { dets: [{ w: 60, h: 60, score: 0.7 }, { w: 50, h: 45, score: 0.8 }] },                                   // two in one corner
+      { dets: [] },
+    ];
+    return { t, f: c.facesFrom(runs, 500, 400), none: c.facesFrom([{ dets: [{ w: 39, h: 31, score: 0.99 }] }], 500, 400),
+      edge: c.facesFrom([{ dets: [{ w: 40, h: 10, score: 0.6 }] }], 500, 400), unsure: c.facesFrom([{ dets: [{ w: 200, h: 200, score: 0.59 }] }], 500, 400), tall: c.facesFrom([{ dets: [{ w: 10, h: 32, score: 0.7 }] }], 500, 400) };
+  });
+  eq(r.t, [{ x: 0, y: 0, w: 500, h: 400, full: true }, { x: 0, y: 0, w: 300, h: 240 }, { x: 200, y: 0, w: 300, h: 240 },
+    { x: 0, y: 160, w: 300, h: 240 }, { x: 200, y: 160, w: 300, h: 240 }], 'tiles');
+  eq(r.f, { count: 2, size: 0.225, score: 0.9 }, 'faces (90 px of 400 tall)');
+  eq(r.none, { count: 0, size: 0, score: 0 }, 'too small (under 8 % of width and height)');
+  eq(r.edge.count, 1, 'exactly at both thresholds counts');
+  eq(r.unsure, { count: 0, size: 0, score: 0 }, 'a big face under the confidence threshold does not count');
+  eq([r.tall.count, r.tall.size], [1, 0.08], 'tall face measured against the height');
+  await ctx.close();
+}, { core: true });
+
+test('textLike: a page of text yes; plain, colourful, noisy and chequered pictures no', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(async () => {
+    const look = async (draw, w = 128, h = 170) => {
+      const c = new OffscreenCanvas(w, h); const x = c.getContext('2d', { willReadFrequently: true });
+      await draw(x, w, h);
+      return window.filter.core.textLike(x.getImageData(0, 0, w, h).data, w, h);
+    };
+    const page = await look(async (x, w, h) => x.drawImage(await createImageBitmap(await window.__fx.textPage()), 0, 0, w, h));
+    const white = await look((x, w, h) => { x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); });
+    const shapes = await look(async (x, w, h) => x.drawImage(await createImageBitmap(await window.__fx.picture(4)), 0, 0, w, h));
+    const noise = await look((x, w, h) => { const d = x.createImageData(w, h); d.data.set(window.__fx.noise(w * h * 4, 5)); for (let i = 3; i < d.data.length; i += 4) d.data[i] = 255; x.putImageData(d, 0, 0); });
+    const chequer = await look((x, w, h) => { for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) { x.fillStyle = (i + j) % 2 ? '#000' : '#fff'; x.fillRect(i * w / 4, j * h / 4, w / 4, h / 4); } });
+    const yellow = await look((x, w, h) => { x.fillStyle = '#ffd040'; x.fillRect(0, 0, w, h); x.fillStyle = '#111'; x.font = '9px sans-serif'; for (let y = 10; y < h; y += 12) x.fillText('total 12.80 paid card', 4, y); });
+    const dark = await look((x, w, h) => { x.fillStyle = '#222'; x.fillRect(0, 0, w, h); x.fillStyle = '#eee'; x.font = '9px sans-serif'; for (let y = 10; y < h; y += 12) x.fillText('total 12.80 paid card', 4, y); });
+    // Each of these passes every rule but one.
+    const stripes = await look((x, w, h) => { for (let i = 0; i < w; i += 2) { x.fillStyle = '#fff'; x.fillRect(i, 0, 1, h); x.fillStyle = '#000'; x.fillRect(i + 1, 0, 1, h); } });   // too much dark
+    const block = await look((x, w, h) => { x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); x.fillStyle = '#000'; x.fillRect(20, 30, 50, 60); });   // no strokes, few edges
+    const greyPaper = await look((x, w, h) => { x.fillStyle = '#969696'; x.fillRect(0, 0, w, h); x.fillStyle = '#111'; x.font = '9px sans-serif'; for (let y = 10; y < h; y += 12) x.fillText('total 12.80 paid card', 4, y); });   // not bright
+    return { page, white: white.isText, shapes: shapes.isText, noise: noise.isText, chequer: chequer.isText, yellow, dark: dark.isText, stripes, block, greyPaper };
+  });
+  assert(r.page.isText, 'text page: ' + JSON.stringify(r.page));
+  for (const k of ['white', 'shapes', 'noise', 'chequer', 'dark']) eq(r[k], false, k);
+  assert(!r.stripes.isText && r.stripes.dark > 0.3 && r.stripes.bright >= 0.5 && r.stripes.edges >= 0.04, 'stripes fail on dark only: ' + JSON.stringify(r.stripes));
+  assert(!r.block.isText && r.block.edges < 0.04 && r.block.dark >= 0.02 && r.block.dark <= 0.3, 'a black block fails on edges only: ' + JSON.stringify(r.block));
+  assert(!r.greyPaper.isText && r.greyPaper.bright < 0.5 && r.greyPaper.edges >= 0.04 && r.greyPaper.sat <= 0.18, 'grey paper fails on brightness only: ' + JSON.stringify(r.greyPaper));
+  assert(r.yellow.sat > 0.18 && !r.yellow.isText, 'text on strongly coloured paper does not count: ' + JSON.stringify(r.yellow));
+  await ctx.close();
+}, { core: true });
+
+test('categorize: the rules in order, each threshold at its edge', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const c = window.filter.core;
+    const none = { count: 0, size: 0, score: 0 }, face = { count: 1, size: 0.3, score: 0.91 }, two = { count: 2, size: 0.2, score: 0.8 };
+    const base = { name: 'PXL_20261029_101500000.jpg', format: 'jpeg', make: 'Google', width: 4080, height: 3072, faces: none, labels: [], text: false };
+    const L = (index, name, score) => ({ index, name, score });
+    const cases = {
+      shotName: { ...base, name: 'Screenshot_20261029-101500.png', faces: face },
+      shotShape: { ...base, name: 'IMG_1.png', format: 'png', make: null, width: 1344, height: 2992, faces: face },
+      shotLandscape: { ...base, name: 'IMG_1.png', format: 'png', make: null, width: 2992, height: 1344 },
+      shotEdges: { ...base, name: 'IMG_1.png', format: 'png', make: null, width: 800, height: 1600 },
+      pngWithCamera: { ...base, name: 'IMG_1.png', format: 'png', width: 1344, height: 2992 },
+      jpegScreenShape: { ...base, make: null, width: 1344, height: 2992 },
+      pngSmall: { ...base, name: 'IMG_1.png', format: 'png', make: null, width: 672, height: 1496 },
+      pngSquare: { ...base, name: 'IMG_1.png', format: 'png', make: null, width: 2000, height: 2000 },
+      pngWide: { ...base, name: 'IMG_1.png', format: 'png', make: null, width: 1000, height: 2992 },
+      pngNarrow: { ...base, name: 'IMG_1.png', format: 'png', make: null, width: 1530, height: 3000 },
+      people: { ...base, faces: face, text: true, labels: [L(207, 'golden retriever', 0.9)] },
+      people2: { ...base, faces: two },
+      text: { ...base, text: true, labels: [L(963, 'pizza', 0.9)] },
+      dogs: { ...base, labels: [L(207, 'golden retriever', 0.15), L(963, 'pizza', 0.2), L(208, 'Labrador retriever', 0.12)] },
+      food: { ...base, labels: [L(963, 'pizza', 0.25)] },
+      pizzaWins: { ...base, labels: [L(207, 'golden retriever', 0.3), L(963, 'pizza', 0.5)] },
+      foodUnder: { ...base, labels: [L(963, 'pizza', 0.24)] },
+      scenery: { ...base, labels: [L(978, 'seashore', 0.2), L(975, 'lakeside', 0.1)] },
+      docs: { ...base, labels: [L(922, 'menu', 0.4)] },
+      cat: { ...base, labels: [L(285, 'Egyptian cat', 0.3)] },
+      eleventh: { ...base, labels: [...Array.from({ length: 10 }, (_, i) => L(600 + i, 'x' + i, 0.01)), L(963, 'pizza', 0.9)] },
+      ends: { ...base, labels: [L(151, 'Chihuahua', 0.13), L(268, 'Mexican hairless', 0.13)] },
+      outside: { ...base, labels: [L(269, 'timber wolf', 0.6), L(150, 'sea lion', 0.6), L(958, 'hay', 0.9)] },
+      empty: { ...base },
+    };
+    return Object.fromEntries(Object.entries(cases).map(([k, v]) => [k, c.categorize(v)]));
+  });
+  const cat = (k) => r[k].category;
+  eq(['shotName', 'shotShape', 'shotLandscape', 'shotEdges'].map(cat), ['screenshots', 'screenshots', 'screenshots', 'screenshots'], 'screenshots first, even with a face');
+  eq([r.shotName.reason, r.shotShape.reason], ['screenshot by its name', 'screen-sized picture with no camera data'], 'screenshot reasons');
+  eq(['pngWithCamera', 'jpegScreenShape', 'pngSmall', 'pngSquare', 'pngWide', 'pngNarrow'].map(cat), ['other', 'other', 'other', 'other', 'other', 'other'], 'not screenshots');
+  eq([cat('people'), r.people.reason], ['people', '1 face, 0.91'], 'a face beats text and labels');
+  eq(r.people2.reason, '2 faces, 0.80', 'two faces');
+  eq([cat('text'), r.text.reason], ['documents', 'mostly text'], 'text beats labels');
+  eq([cat('dogs'), r.dogs.reason], ['pets', 'golden retriever 0.15, pets 0.27'], 'dog breeds add up and beat a single pizza');
+  eq([cat('food'), cat('foodUnder')], ['food', 'other'], 'labelMin edge');
+  eq(cat('pizzaWins'), 'food', 'the highest sum wins, whatever the group order');
+  eq([cat('scenery'), cat('docs'), cat('cat')], ['scenery', 'documents', 'pets'], 'groups');
+  eq(cat('eleventh'), 'other', 'only the top 10 labels count');
+  eq(cat('ends'), 'pets', 'both ends of a range count');
+  eq([cat('outside'), r.outside.reason], ['other', 'nothing clear (best guess: timber wolf 0.60)'], 'labels just outside the groups');
+  eq([cat('empty'), r.empty.reason], ['other', 'nothing clear'], 'nothing at all');
+  await ctx.close();
+}, { core: true });
+
+test('mapAhead keeps order, never runs more than depth ahead, stops on request, passes errors on', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(async () => {
+    const c = window.filter.core;
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    let inflight = 0, maxIn = 0;
+    const load = async (x) => { inflight++; maxIn = Math.max(maxIn, inflight); await sleep(x % 3 ? 5 : 20); inflight--; return x * 10; };
+    const seen = [];
+    await c.mapAhead([1, 2, 3, 4, 5, 6, 7], 3, load, async (v, i) => { seen.push([v, i]); await sleep(2); });
+    const stopped = [], loaded = [];
+    await c.mapAhead([1, 2, 3, 4, 5, 6, 7, 8], 2, async (x) => { loaded.push(x); return x; }, (v) => { stopped.push(v); return v < 3; });
+    let err = 'none';
+    try { await c.mapAhead([1, 2, 3], 2, async (x) => { if (x === 2) throw new Error('bad ' + x); return x; }, () => {}); } catch (e) { err = e.message; }
+    const empty = [];
+    await c.mapAhead([], 3, async (x) => x, (v) => empty.push(v));
+    return { seen, maxIn, stopped, loaded: loaded.length, err, empty: empty.length };
+  });
+  eq(r.seen, [[10, 0], [20, 1], [30, 2], [40, 3], [50, 4], [60, 5], [70, 6]], 'results in order');
+  eq(r.maxIn, 3, 'at most 3 loading at once');
+  eq(r.stopped, [1, 2, 3], 'stops when each returns false');
+  assert(r.loaded <= 5, 'stopped early, loaded ' + r.loaded);
+  eq(r.err, 'bad 2', 'a load error is passed on');
+  eq(r.empty, 0, 'nothing to do');
+  await ctx.close();
+}, { core: true });
+
+/* ---------- Core: the safe copy ---------- */
+
+// Runs core.safeCopy in the page on a fresh A -> A/to pair holding one file of
+// random bytes. fault names a fault for the target folder.
+async function copyCase(page, { size = 300000, fault = null, existing = false, clash = false, missing = false } = {}) {
+  return page.evaluate(async ({ size, fault, existing, clash, missing }) => {
+    const fx = window.__fx, c = window.filter.core;
+    const tag = 'C' + Math.random().toString(36).slice(2, 8);
     const from = await fx.dir(tag), to = await fx.dir(tag + '/to');
     const name = 'PXL_20261029_101500123.jpg';
     const bytes = fx.noise(size, 9);
-    if (!missing) await fx.put(from, name, bytes);
+    await fx.put(from, name, bytes);
+    const src = await from.getFileHandle(name);
+    if (missing) await from.removeEntry(name);
     if (clash) await fx.put(to, name, fx.noise(1234, 5));
     const before = { from: await fx.tree(from), to: await fx.tree(to) };
-    const ops = [];
-    const f = fault.from ? fx.wrap(from, fault.from, ops, 'from') : fx.wrap(from, null, ops, 'from');
-    const t = fault.to ? fx.wrap(to, fault.to, ops, 'to') : fx.wrap(to, null, ops, 'to');
-    const steps = [];
-    const opts = { onStep: (st) => steps.push(st) };
-    if (alter) opts.alterCopy = async (file) => { const b = new Uint8Array(await file.arrayBuffer()); b[b.length >> 1] ^= 0xFF; return b; };
-    const log = await c.safeMove(f, name, t, opts);
+    const ops = [], steps = [];
+    const t = fx.wrap(to, fault, ops, 'to');
+    const log = await c.safeCopy(src, name, t, { existing: new Set(existing ? [name] : []), onStep: (s) => steps.push(s) });
     return {
-      log, ops, before, name, steps,
-      srcSha: missing ? null : await fx.sha(new Blob([bytes])),
-      fromHas: await fx.has(from, name), toHas: await fx.has(to, name),
+      log, ops, steps, before, name,
+      srcSha: await fx.sha(new Blob([bytes])),
       fromSha: (await fx.has(from, name)) ? await fx.shaOf(from, name) : null,
       toSha: (await fx.has(to, name)) ? await fx.shaOf(to, name) : null,
       toSize: (await fx.has(to, name)) ? (await (await to.getFileHandle(name)).getFile()).size : null,
       after: { from: await fx.tree(from), to: await fx.tree(to) },
     };
-  }, { size, fault, alter, clash, missing });
+  }, { size, fault, existing, clash, missing });
 }
 
-test('safe move: copies, reads back, checks size and SHA-256, then deletes the original', async () => {
+test('safe copy: copies, reads the copy back, checks size and SHA-256, leaves the original as it was', async () => {
   const { ctx, page } = await newApp();
-  const r = await moveCase(page);
+  const r = await copyCase(page);
   const L = r.log;
-  eq([L.ok, L.step, L.kept, L.originalGone], [true, 'done', 'copy', true], 'outcome');
+  eq([L.ok, L.skipped, L.step, L.copyMade], [true, false, 'done', true], 'outcome');
   eq([L.size, L.copySize], [300000, 300000], 'sizes');
-  eq(L.sha256, r.srcSha, 'hash of the original');
-  eq(L.copySha256, r.srcSha, 'hash of the copy');
-  eq([r.fromHas, r.toHas, r.toSha], [false, true, r.srcSha], 'original gone, copy byte-identical');
-  for (const k of ['hash', 'copy', 'readBack', 'delete']) assert(typeof L.ms[k] === 'number' && L.ms[k] >= 0, 'time for ' + k);
+  eq([L.sha256, L.copySha256], [r.srcSha, r.srcSha], 'hashes');
+  eq([r.fromSha, r.toSha], [r.srcSha, r.srcSha], 'original unchanged, copy byte-identical');
+  const top = (t) => Object.fromEntries(Object.entries(t).filter(([k]) => !k.startsWith('to/')));
+  eq(top(r.after.from), top(r.before.from), 'source folder exactly as before');
+  eq(r.steps, ['read original', 'check target', 'copy', 'read back', 'compare', 'done'], 'each step reported as it starts');
   assert(!L.reason, 'no reason on success: ' + L.reason);
-  eq(r.steps, ['read original', 'check target', 'copy', 'read back', 'compare', 'recheck original', 'delete original', 'done'], 'each step reported as it starts');
+  for (const k of ['hash', 'copy', 'readBack']) assert(typeof L.ms[k] === 'number' && L.ms[k] >= 0, 'time for ' + k);
   await ctx.close();
 }, { core: true });
 
-test('safe move: a forced bad copy (one byte changed) stops and keeps both', async () => {
+test('safe copy: a name already listed in the target folder is skipped, nothing written', async () => {
   const { ctx, page } = await newApp();
-  const r = await moveCase(page, { alter: true });
-  const L = r.log;
-  eq([L.ok, L.step, L.kept, L.reason], [false, 'compare', 'both', 'SHA-256 differs'], 'outcome');
-  eq([r.fromHas, r.fromSha], [true, r.srcSha], 'original kept, unchanged');
-  assert(r.toHas && r.toSha !== r.srcSha && r.toSize === 300000, 'the bad copy is left beside it, same size, different bytes');
-  assert(!r.ops.some((o) => o.includes('removeEntry')), 'nothing deleted');
-  eq(r.steps, ['read original', 'check target', 'copy', 'read back', 'compare'], 'steps stop at the compare');
+  const r = await copyCase(page, { existing: true });
+  eq([r.log.ok, r.log.skipped, r.log.step, r.log.copyMade, r.log.reason], [false, true, 'check target', false, 'already in the target folder'], 'outcome');
+  eq(r.after, r.before, 'both folders as before');
+  assert(!r.ops.some((o) => /createWritable|create$/.test(o)), 'nothing written: ' + r.ops.join(', '));
   await ctx.close();
 }, { core: true });
 
-test('safe move: a disk that changes a byte is caught the same way', async () => {
+test('safe copy: a file the listing missed is still never overwritten', async () => {
   const { ctx, page } = await newApp();
-  const r = await moveCase(page, { fault: { to: 'flip' } });
-  const L = r.log;
-  eq([L.ok, L.step, L.kept, L.reason], [false, 'compare', 'both', 'SHA-256 differs'], 'outcome');
-  eq([r.fromHas, r.fromSha], [true, r.srcSha], 'original kept, unchanged');
-  assert(r.toSha !== r.srcSha, 'copy really differs');
+  const r = await copyCase(page, { clash: true });
+  eq([r.log.ok, r.log.skipped, r.log.step], [false, true, 'check target'], 'outcome');
+  eq(r.after, r.before, 'the file already there keeps its bytes');
+  assert(!r.ops.some((o) => /createWritable/.test(o)), 'nothing written');
   await ctx.close();
 }, { core: true });
 
-test('safe move: a short copy is caught by the size check', async () => {
+test('safe copy: a disk that changes a byte is caught, both files kept', async () => {
   const { ctx, page } = await newApp();
-  const r = await moveCase(page, { fault: { to: 'truncate' } });
+  const r = await copyCase(page, { fault: 'flip' });
   const L = r.log;
-  eq([L.ok, L.step, L.kept, L.copySize], [false, 'compare', 'both', 299900], 'outcome');
-  assert(/^size differs/.test(L.reason), 'reason names the size: ' + L.reason);
-  eq([r.fromHas, r.fromSha], [true, r.srcSha], 'original kept, unchanged');
+  eq([L.ok, L.skipped, L.step, L.reason, L.copyMade], [false, false, 'compare', 'SHA-256 differs', true], 'outcome');
+  eq(r.fromSha, r.srcSha, 'original unchanged');
+  assert(r.toSha && r.toSha !== r.srcSha && r.toSize === 300000, 'the bad copy is left, same size, different bytes');
   await ctx.close();
 }, { core: true });
 
-test('safe move: never overwrites a file already in the target folder', async () => {
+test('safe copy: a short copy is caught by the size check', async () => {
   const { ctx, page } = await newApp();
-  const r = await moveCase(page, { clash: true });
-  const L = r.log;
-  eq([L.ok, L.step, L.kept], [false, 'check target', 'original'], 'outcome');
-  eq(r.after, r.before, 'both folders exactly as before');
-  assert(!r.ops.some((o) => /createWritable|removeEntry/.test(o)), 'nothing written or deleted: ' + r.ops.join(', '));
+  const r = await copyCase(page, { fault: 'truncate' });
+  eq([r.log.ok, r.log.step, r.log.copySize], [false, 'compare', 299900], 'outcome');
+  assert(/^size differs/.test(r.log.reason), 'reason names the size: ' + r.log.reason);
+  eq(r.fromSha, r.srcSha, 'original unchanged');
   await ctx.close();
 }, { core: true });
 
-test('safe move: a failed write keeps the original', async () => {
+test('safe copy: a write that fails part way is abandoned and reported', async () => {
   const { ctx, page } = await newApp();
-  const r = await moveCase(page, { fault: { to: 'throwWrite' } });
-  const L = r.log;
-  eq([L.ok, L.step, L.kept], [false, 'copy', 'both'], 'outcome');
-  assert(/QuotaExceededError/.test(L.reason), 'reason carries the error: ' + L.reason);
-  eq([r.fromHas, r.fromSha], [true, r.srcSha], 'original kept, unchanged');
-  assert(!r.ops.some((o) => o.includes('removeEntry')), 'nothing deleted');
-  await ctx.close();
-}, { core: true });
-
-test('safe move: a write that fails part way is abandoned and reported', async () => {
-  const { ctx, page } = await newApp();
-  const r = await moveCase(page, { fault: { to: 'failMidWrite' } });
-  const L = r.log;
-  eq([L.ok, L.step, L.kept], [false, 'copy', 'both'], 'outcome');
-  assert(/NotReadableError: card removed/.test(L.reason), 'reason carries the error: ' + L.reason);
+  const r = await copyCase(page, { fault: 'failMidWrite' });
+  eq([r.log.ok, r.log.skipped, r.log.step], [false, false, 'copy'], 'outcome');
+  assert(/NotReadableError: card removed/.test(r.log.reason), 'reason: ' + r.log.reason);
   assert(r.ops.includes('to abort ' + r.name), 'the half-written copy was abandoned');
   assert(!r.ops.some((o) => o.startsWith('to getFile ')), 'no read back after a failed write');
-  eq([r.fromHas, r.fromSha], [true, r.srcSha], 'original kept, unchanged');
+  eq(r.fromSha, r.srcSha, 'original unchanged');
   await ctx.close();
 }, { core: true });
 
-test('safe move: a refused delete keeps both and says so', async () => {
+test('safe copy: a refused write and a missing original are reported, never thrown', async () => {
   const { ctx, page } = await newApp();
-  const r = await moveCase(page, { fault: { from: 'removeFails' } });
-  const L = r.log;
-  eq([L.ok, L.step, L.kept], [false, 'delete original', 'both'], 'outcome');
-  assert(/NotAllowedError/.test(L.reason), 'reason: ' + L.reason);
-  eq([r.fromSha, r.toSha], [r.srcSha, r.srcSha], 'original and good copy both there');
+  const a = await copyCase(page, { fault: 'throwWrite' });
+  eq([a.log.ok, a.log.step], [false, 'copy'], 'write refused');
+  assert(/QuotaExceededError/.test(a.log.reason), 'reason: ' + a.log.reason);
+  const b = await copyCase(page, { missing: true });
+  eq([b.log.ok, b.log.skipped, b.log.step, b.log.copyMade], [false, false, 'read original', false], 'original gone');
+  assert(/NotFoundError/.test(b.log.reason), 'reason: ' + b.log.reason);
+  eq(b.after.to, {}, 'nothing created in the target');
   await ctx.close();
 }, { core: true });
 
-test('safe move: a delete that silently does nothing is caught', async () => {
-  const { ctx, page } = await newApp();
-  const r = await moveCase(page, { fault: { from: 'removeNoop' } });
-  const L = r.log;
-  eq([L.ok, L.kept, L.originalGone], [false, 'both', false], 'outcome');
-  assert(/still listed/.test(L.reason), 'reason: ' + L.reason);
-  eq([r.fromSha, r.toSha], [r.srcSha, r.srcSha], 'both there');
-  await ctx.close();
-}, { core: true });
+/* ---------- App ---------- */
 
-test('safe move: an original that changes during the copy is not deleted', async () => {
-  const { ctx, page } = await newApp();
-  const r = await moveCase(page, { fault: { from: 'changesOriginal' } });
-  const L = r.log;
-  eq([L.ok, L.step, L.kept], [false, 'recheck original', 'both'], 'outcome');
-  assert(r.fromHas, 'original still there');
-  assert(!r.ops.some((o) => o.includes('removeEntry')), 'nothing deleted');
-  await ctx.close();
-}, { core: true });
-
-test('safe move: the delete is the last step, on the original only, after the copy is read back', async () => {
-  const { ctx, page } = await newApp();
-  const r = await moveCase(page);
-  const ops = r.ops, n = r.name;
-  const del = ops.filter((o) => o.includes('removeEntry'));
-  eq(del, ['from removeEntry ' + n], 'one delete, of the original');
-  const at = (s) => ops.lastIndexOf(s);
-  assert(at('to createWritable ' + n) > at('from getFile ' + n) - 999, 'copy written');
-  assert(ops.indexOf('to getFile ' + n) > ops.indexOf('to createWritable ' + n), 'copy read back after writing');
-  assert(ops.indexOf('from removeEntry ' + n) > ops.indexOf('to getFile ' + n), 'delete after the read back');
-  assert(ops.indexOf('from removeEntry ' + n) > ops.lastIndexOf('from getFile ' + n), 'delete after the original is re-checked');
-  eq(ops.filter((o) => o === 'from getFile ' + n).length, 2, 'original read twice (hash, then re-check)');
-  await ctx.close();
-}, { core: true });
-
-test('safe move: a missing original creates nothing and never throws', async () => {
-  const { ctx, page } = await newApp();
-  const r = await moveCase(page, { missing: true });
-  const L = r.log;
-  eq([L.ok, L.step, L.kept], [false, 'read original', 'original'], 'outcome');
-  assert(/NotFoundError/.test(L.reason), 'reason: ' + L.reason);
-  eq(r.after.to, {}, 'target folder still empty');
-  await ctx.close();
-}, { core: true });
-
-/* ---------- Probe: the page ---------- */
-
-test('page opens clean: darkroom, four questions, buttons wait for a folder', async () => {
+test('start: clean darkroom page, one amber button, nothing to tap under 44 px', async () => {
   const { ctx, page } = await newApp();
   const r = await page.evaluate(() => ({
     bg: getComputedStyle(document.body).backgroundColor,
-    cards: [...document.querySelectorAll('.card h2')].map((h) => h.textContent),
-    disabled: ['#btn-read', '#btn-count', '#btn-move', '#btn-recog'].map((s) => document.querySelector(s).disabled),
-    pick: document.querySelector('#btn-pick').disabled,
+    screen: window.filter.state.screen,
+    pick: [document.querySelector('#btn-pick').textContent, document.querySelector('#btn-pick').classList.contains('btn-primary')],
+    allow: document.querySelector('#btn-allow').hidden,
     status: document.querySelector('#status').textContent,
-    device: window.filter.results().device.rows.map((r) => r[1]),
-    reopen: window.filter.results().reopen.rows[0],
-    small: [...document.querySelectorAll('button:not([hidden])')].filter((b) => b.offsetParent && (b.offsetWidth < 44 || b.offsetHeight < 44)).map((b) => b.id || b.textContent),
+    small: [...document.querySelectorAll('button')].filter((b) => b.offsetParent && (b.offsetWidth < 44 || b.offsetHeight < 44)).map((b) => b.id || b.textContent),
     overflow: document.documentElement.scrollWidth > window.innerWidth,
   }));
   eq(r.bg, 'rgb(11, 11, 11)', 'stage colour');
-  eq(r.cards, ['This phone', 'Folder', 'Safe move', 'Reopen', 'Recognition'], 'cards');
-  eq(r.disabled, [true, true, true, true], 'folder buttons disabled');
-  eq(r.pick, false, 'pick enabled');
-  eq(r.status, 'no folder yet', 'status');
-  assert(/^\d+\.\d+\.\d+\.\d+$/.test(r.device[0]) && !/\.0\.0\.0$/.test(r.device[0]), 'full Chrome version from client hints: ' + r.device[0]);
-  eq(r.device[1], 'not Android', 'Android row on a desktop test browser');
-  assert(/no folder yet/.test(r.reopen[1]), 'reopen says nothing stored yet');
+  eq([r.screen, r.pick, r.allow, r.status], ['start', ['Pick a folder', true], true, 'no folder yet'], 'start screen');
   eq(r.small, [], 'tap targets under 44 px');
   eq(r.overflow, false, 'no sideways scroll at phone width');
   assert(page.errors.length === 0, page.errors.join('; '));
   await ctx.close();
 });
 
-test('01 folder: counts the fake camera folder exactly and times it', async () => {
+test('setup: picking the camera folder lists it and counts what is new', async () => {
   const { ctx, page } = await newApp();
-  await page.evaluate(() => window.__fx.camera());
-  await pick(page, 'DCIM/Camera');
-  const s = await section(page, 'folder');
-  eq(s.verdict, 'pass', 'verdict');
-  eq(s.rows.Folder.v, 'Camera', 'folder');
-  eq(s.rows.Entries.v, '20, the whole folder', 'entries');
-  eq([s.rows.Photos.v, s.rows.Videos.v, s.rows.Subfolders.v, s.rows.Other.v], ['8', '4', '2', '3'], 'counts');
-  assert(/^3 /.test(s.rows.Hidden.v), 'hidden: ' + s.rows.Hidden.v);
-  assert(/ms$/.test(s.rows['First entry'].v) && /per entry/.test(s.rows['Read time'].v), 'timed');
-  eq(s.rows.Stall.v, 'none', 'no stall');
-  assert(/^12 files, /.test(s.rows['File sizes'].v), 'sizes read for 12 media files: ' + s.rows['File sizes'].v);
-  const st = await page.evaluate(() => [document.querySelector('#btn-move').disabled, document.querySelector('#status').textContent]);
-  eq(st, [false, 'folder ▸ Camera'], 'buttons enabled, status');
+  await openCamera(page);
+  eq(await screen(page), 'setup', 'screen');
+  const r = await rowsOf(page, '#setup-rows');
+  assert(/^14 in [\d.]+ s$/.test(r.Entries), 'entries: ' + r.Entries);
+  eq([r.Photos, r['Already sorted'], r['Not yet sorted']], ['10', '0', '10'], 'counts (videos, hidden files and text left out)');
+  const st = await page.evaluate(() => [document.querySelector('#newest').value, document.querySelector('#btn-sort').disabled, document.querySelector('#status').textContent]);
+  eq(st, ['10', false, 'folder ▸ Camera'], 'newest set to what is there, sort enabled');
+  await ctx.close();
+});
+
+test('run and review: each photo lands in the right folder, grid per folder, other stays', async () => {
+  const { ctx, page } = await newApp();
+  await openCamera(page);
+  await sort(page);
+  eq(await screen(page), 'review', 'screen');
+  eq(sortPlan(await plan(page)), sortPlan(EXPECTED_PLAN), 'plan');
+  const r = await page.evaluate(() => ({
+    heads: [...document.querySelectorAll('.group-head')].map((h) => h.textContent),
+    thumbs: [...document.querySelectorAll('.ph img')].map((i) => i.src.slice(0, 5)),
+    copy: [document.querySelector('#btn-copy').textContent, document.querySelector('#btn-copy').hidden],
+    edge: document.querySelector('#bar-edge').textContent,
+    reasons: Object.fromEntries(window.filter.state.plan.map((p) => [p.name, p.reason])),
+    overflow: document.documentElement.scrollWidth > window.innerWidth,
+  }));
+  eq(r.heads, ['people ▸ 2', 'pets ▸ 2', 'food ▸ 1', 'screenshots ▸ 2', 'documents ▸ 1', 'scenery ▸ 1', 'other ▸ 1stay here, not copied'], 'groups in order');
+  assert(r.thumbs.length === 10 && r.thumbs.every((s) => s === 'blob:'), 'a thumbnail for every photo');
+  eq(r.copy, ['Copy 9', false], 'copy button');
+  eq(r.edge, '10 photos ▸ 1 stay', 'film edge');
+  eq(r.reasons['PXL_20261029_100900000.jpg'], 'golden retriever 0.40, pets 0.60', 'reason kept for the sheet');
+  eq(r.reasons['IMG_20261029_100300.png'], 'screen-sized picture with no camera data', 'screenshot by shape');
+  eq(r.reasons['PXL_20261029_100600000.jpg'], 'mostly text', 'text page found by the real text check');
+  eq(r.overflow, false, 'no sideways scroll');
   assert(page.errors.length === 0, page.errors.join('; '));
   await ctx.close();
 });
 
-test('01 folder: stops at 500 in a big folder, and count all reads it all in batches', async () => {
+test('review: tapping a photo and choosing a folder sends it there, marked in amber', async () => {
   const { ctx, page } = await newApp();
-  await page.evaluate(() => window.__fx.big('DCIM/Big', { photo: 900, video: 250, hidden: 60, other: 20, folder: 4 }));
-  await pick(page, 'DCIM/Big');
-  let s = await section(page, 'folder');
-  eq(s.rows.Entries.v, '500, stopped at 500, there are more', 'first batch');
-  const sum = ['Photos', 'Videos', 'Subfolders', 'Other'].reduce((a, k) => a + +s.rows[k].v, 0) + parseInt(s.rows.Hidden.v, 10);
-  eq(sum, 500, 'counts in the first batch add up');
-  await run(page, '#btn-count');
-  s = await section(page, 'folder');
-  eq(s.verdict, 'pass', 'verdict');
-  eq(s.rows['All entries'].v, '1234, whole folder', 'all entries');
-  eq(s.rows['All counts'].v, '900 photos, 250 videos, 4 subfolders, 60 hidden, 20 other', 'all counts');
-  assert(/ in 3 batches, slowest batch /.test(s.rows['All time'].v), 'batches: ' + s.rows['All time'].v);
-  await run(page, '#btn-count');
-  s = await section(page, 'folder');
-  eq(s.list.filter((r) => r[0] === 'All entries').length, 1, 'a second count replaces the first');
+  await openCamera(page);
+  await sort(page);
+  await page.click('.group[data-category="other"] .ph');
+  const sheet = await page.evaluate(() => ({
+    open: !document.querySelector('#sheet').hidden,
+    name: document.querySelector('#sheet-name').textContent,
+    why: document.querySelector('#sheet-why').textContent,
+    pressed: [...document.querySelectorAll('#sheet-targets button')].filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.dataset.category),
+    targets: [...document.querySelectorAll('#sheet-targets button')].map((b) => b.textContent),
+  }));
+  eq([sheet.open, sheet.name, sheet.pressed], [true, 'PXL_20261029_100500000.jpg', ['other']], 'sheet');
+  eq(sheet.why, 'filter said other: nothing clear (best guess: hook 0.12)', 'why');
+  eq(sheet.targets, ['people', 'pets', 'food', 'screenshots', 'documents', 'scenery', 'other (stays)'], 'folders offered');
+  await page.click('#sheet-targets button[data-category="food"]');
+  const p = await plan(page);
+  eq(p.food.slice().sort(), ['PXL_20261029_100500000.jpg', 'PXL_20261029_100800000.jpg'], 'moved to food');
+  eq(p.other, undefined, 'other now empty');
+  const r = await page.evaluate(() => ({ changed: document.querySelectorAll('.ph.changed').length, copy: document.querySelector('#btn-copy').textContent, sheet: document.querySelector('#sheet').hidden }));
+  eq(r, { changed: 1, copy: 'Copy 10', sheet: true }, 'marked, counted, sheet closed');
+  await page.click('.group[data-category="pets"] .ph');
+  await page.click('#sheet-cancel');
+  eq((await plan(page)).pets.length, 2, 'cancel changes nothing');
   await ctx.close();
 });
 
-test('01 folder: a stalling folder is reported as a stall, not a hang', async () => {
+test('copy: every copy lands in its folder byte-identical, originals untouched, log written', async () => {
+  const { ctx, page } = await newApp();
+  await openCamera(page);
+  const before = await camTree(page);
+  await sort(page);
+  await page.click('.group[data-category="pets"] .ph');   // send the newest pet photo to other
+  await page.click('#sheet-targets button[data-category="other"]');
+  await run(page, '#btn-copy');
+  eq(await screen(page), 'done', 'screen');
+  const after = await camTree(page);
+  eq(onlyRoot(after), onlyRoot(before), 'the camera folder itself is exactly as before');
+  const want = { ...EXPECTED_PLAN, pets: ['PXL_20250101_120000000.jpg'] };
+  for (const [c, names] of Object.entries(want)) {
+    if (c === 'other') continue;
+    eq(filesIn(after, c), names.slice().sort(), c + '/ holds exactly its photos');
+    for (const n of names) eq(after[c + '/' + n], before[n], c + '/' + n + ' is byte-identical');
+  }
+  assert(!Object.keys(after).some((k) => k.startsWith('other/')), 'no other/ folder: those photos stay');
+  const logs = filesIn(after, 'filter-logs');
+  assert(logs.length === 1 && /^run-\d{6}-\d{6}\.json$/.test(logs[0]), 'one log: ' + logs.join(', '));
+  const log = await readLog(page, logs[0]);
+  eq([log.app, log.version, log.mode, log.folder], ['filter', VERSION, 'copy', 'Camera'], 'log header');
+  eq(log.result, { copied: 8, skipped: 0, stayed: 2, stopped: null }, 'log result');
+  eq(log.items.length, 8, 'one line per copy');
+  for (const it of log.items) {
+    eq([it.ok, it.sha256, it.copySha256, it.from], [true, before[it.name], before[it.name], '.'], it.name + ' logged with its hashes');
+    assert(want[it.to].includes(it.name), it.name + ' logged in the right folder');
+  }
+  const d = await rowsOf(page, '#done-rows');
+  eq(d.Copied, '8 of 8, each read back and checked (size and SHA-256)', 'done: copied');
+  eq([d['Already there'], d.Stayed, d['You changed'], d.Log], ['0', '2 in other, not copied', '1 of 10', 'filter-logs/' + logs[0]], 'done rows');
+  eq(await text(page, '#done-title'), 'Done', 'title');
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
+test('a second run skips what is already copied and takes the next newest', async () => {
+  const { ctx, page } = await newApp();
+  await openCamera(page);
+  await sort(page, 3);
+  eq(Object.values(await plan(page)).flat().sort(), ['PXL_20261029_100800000.jpg', 'PXL_20261029_100900000.jpg', 'PXL_20261029_101000000.jpg'], 'the 3 newest');
+  await run(page, '#btn-copy');
+  await run(page, '#btn-again');
+  const r = await rowsOf(page, '#setup-rows');
+  eq([r.Photos, r['Already sorted'], r['Not yet sorted']], ['10', '3', '7'], 'counts after the first run');
+  await sort(page, 2);
+  eq(Object.values(await plan(page)).flat().sort(), ['PXL_20261029_100600000.jpg', 'PXL_20261029_100700000.jpg'], 'the next 2 newest');
+  await run(page, '#btn-copy');
+  eq(filesIn(await camTree(page), 'filter-logs').length, 2, 'a log per run, none replaced');
+  await ctx.close();
+});
+
+test('the preview inside a JPEG is used when big enough, and turned upright', async () => {
   const { ctx, page } = await newApp();
   await page.evaluate(async () => {
-    const d = await window.__fx.big('DCIM/Slow', { photo: 40, video: 0, hidden: 0, other: 0 });
-    window.filter.config.stallMs = 300;
-    window.__pick = window.__fx.wrap(d, 'stallAfter7');
+    const fx = window.__fx, cam = await fx.dir('DCIM/Camera');
+    window.__answers = {};
+    const blue = await fx.picture(0, { w: 1600, h: 1200, flat: '#1030c0' });
+    await fx.put(cam, 'PXL_20261029_120000000.jpg', await fx.withExif(blue, { orientation: 6, thumb: await fx.picture(0, { w: 320, h: 240, flat: '#e01010' }) }));
+    await fx.put(cam, 'PXL_20261029_110000000.jpg', await fx.withExif(blue, { orientation: 1, thumb: await fx.picture(0, { w: 160, h: 120, flat: '#e01010' }) }));
+    window.__pick = cam;
   });
   await run(page, '#btn-pick');
-  const s = await section(page, 'folder');
-  eq(s.verdict, 'fail', 'verdict');
-  eq(s.rows.Stall.v, 'nothing new for 0.3 s after 7 entries', 'stall row');
-  eq(s.rows.Stall.t, 'fail', 'stall tone');
+  await sort(page);
+  const r = await page.evaluate(async () => {
+    const out = {};
+    for (const p of window.filter.state.plan) {
+      const l = await window.__fx.look(p.thumb);
+      out[p.name] = { w: l.w, h: l.h, red: l.centre[0] > 150 && l.centre[2] < 100, preview: p.preview };
+    }
+    return { out, used: window.filter.state.lastRun.previewUsed };
+  });
+  eq(r.out['PXL_20261029_120000000.jpg'], { w: 150, h: 200, red: true, preview: true }, 'big preview used, turned upright (portrait)');
+  eq(r.out['PXL_20261029_110000000.jpg'], { w: 200, h: 150, red: false, preview: false }, 'small preview skipped: the photo itself decoded');
+  eq(r.used, 1, 'preview count');
   await ctx.close();
 });
 
-test('01 folder: closing the picker changes nothing; no picker at all is a clear fail', async () => {
+test('stop during recognition goes to review with the photos done so far', async () => {
   const { ctx, page } = await newApp();
-  await run(page, '#btn-pick');                 // __pick unset: the fake picker reports AbortError
-  eq(await section(page, 'folder'), null, 'nothing recorded after closing the picker');
+  await page.evaluate(() => { window.filter.config.prefetch = 1; });
+  await openCamera(page);
+  await page.evaluate(() => {
+    let n = 0;
+    window.filter.recog.override = (e) => { if (++n === 3) window.filter.state.stopRequested = true; return window.__answers[e.name] || {}; };
+  });
+  await sort(page);
+  eq(await screen(page), 'review', 'screen');
+  eq(await page.evaluate(() => window.filter.state.plan.length), 3, 'three photos in the plan');
+  await ctx.close();
+});
+
+test('models that fail to load send the run back to the folder, nothing changed', async () => {
+  const { ctx, page } = await newApp();
+  await openCamera(page);
+  const before = await camTree(page);
+  await page.evaluate(() => { window.filter.recog.load = () => Promise.reject(new Error('broken model')); });
+  await sort(page);
+  eq(await screen(page), 'setup', 'back on the folder screen');
+  eq(await text(page, '#setup-note'), 'The models did not load: Error: broken model. Try again; nothing was changed.', 'says why');
+  eq(await camTree(page), before, 'folder untouched');
+  await ctx.close();
+});
+
+test('a bad copy stops the run: nothing after it is copied, the original is untouched, the log says why', async () => {
+  const { ctx, page } = await newApp();
+  await openCamera(page, { pets: 'flip' });
+  const before = await camTree(page);
+  await sort(page);
+  await run(page, '#btn-copy');
+  eq(await text(page, '#done-title'), 'Stopped', 'title');
+  eq(await text(page, '#done-note'), 'Stopped at PXL_20261029_100900000.jpg (compare): SHA-256 differs. The original is untouched. The faulty copy is in the folder beside it; nothing was deleted.', 'note');
+  const after = await camTree(page);
+  eq(onlyRoot(after), onlyRoot(before), 'camera folder as before');
+  eq(Object.keys(after).filter((k) => /^(people|food|scenery|documents|screenshots)\/./.test(k)), ['people/PXL_20261029_101000000.jpg'], 'only the photo before the failure was copied');
+  assert(after['pets/PXL_20261029_100900000.jpg'] && after['pets/PXL_20261029_100900000.jpg'] !== before['PXL_20261029_100900000.jpg'], 'the bad copy is there, different bytes');
+  eq((await rowsOf(page, '#done-rows')).Copied, '1 of 9, each read back and checked (size and SHA-256)', 'copied count');
+  const log = await readLog(page, filesIn(after, 'filter-logs')[0]);
+  eq(log.result.stopped, 'PXL_20261029_100900000.jpg: SHA-256 differs', 'log says why');
+  eq(log.items.map((i) => [i.name, i.ok]), [['PXL_20261029_101000000.jpg', true], ['PXL_20261029_100900000.jpg', false]], 'log lines');
+  await ctx.close();
+});
+
+test('reopen: after a restart one tap on Allow brings the folder back', async () => {
+  const { ctx, page } = await newApp({ persistent: true });
+  await openCamera(page);
+  await page.evaluate(() => localStorage.setItem('__askOnReopen', '1'));
+  await page.reload(); await ready(page);
+  const r = await page.evaluate(() => ({
+    screen: window.filter.state.screen,
+    allow: [document.querySelector('#btn-allow').hidden, document.querySelector('#btn-allow').textContent],
+    pick: [document.querySelector('#btn-pick').textContent, document.querySelector('#btn-pick').classList.contains('btn-primary')],
+    note: document.querySelector('#start-note').textContent,
+    status: document.querySelector('#status').textContent,
+  }));
+  eq(r, { screen: 'start', allow: [false, 'Allow access to Camera'], pick: ['Pick another folder', false],
+    note: 'Chrome asks again after every restart. One tap on Allow brings Camera back.', status: 'access needed' }, 'start screen asks once');
+  await run(page, '#btn-allow');
+  eq(await screen(page), 'setup', 'straight to the folder');
+  eq((await rowsOf(page, '#setup-rows')).Photos, '10', 'folder read');
+  await ctx.close();
+});
+
+test('reopen: when access is still there, the app opens straight on the folder', async () => {
+  const { ctx, page } = await newApp({ persistent: true });
+  await openCamera(page);
+  await page.reload(); await ready(page);
+  eq(await screen(page), 'setup', 'no tap needed');
+  eq((await rowsOf(page, '#setup-rows')).Photos, '10', 'folder read');
+  await ctx.close();
+});
+
+test('closing the picker changes nothing; no picker at all says so', async () => {
+  const { ctx, page } = await newApp();
+  await run(page, '#btn-pick');
+  eq([await screen(page), await text(page, '#start-note')], ['start', ''], 'picker closed');
   await page.evaluate(() => localStorage.setItem('__noPicker', '1'));
   await page.reload(); await ready(page);
   await run(page, '#btn-pick');
-  const s = await section(page, 'folder');
-  eq([s.verdict, s.rows.Picker.t], ['fail', 'fail'], 'no picker');
+  eq(await text(page, '#start-note'), 'This browser cannot open folders. Use Chrome on Android.', 'no picker');
   await ctx.close();
 });
 
-test('02 safe move: the full test passes, cleans up, and leaves the real files untouched', async () => {
+test('start over needs two taps', async () => {
   const { ctx, page } = await newApp();
-  await page.evaluate(() => window.__fx.camera());
-  await pick(page, 'DCIM/Camera');
-  const before = await page.evaluate(async () => window.__fx.tree(await window.__fx.dir('DCIM/Camera')));
-  await page.evaluate(() => { window.filter.config.testImageSide = 160; });
-  await run(page, '#btn-move');
-  const s = await section(page, 'move');
-  const fails = s.list.filter((r) => r[2] === 'fail');
-  eq(fails, [], 'no failing rows');
-  eq(s.verdict, 'pass', 'verdict');
-  assert(/created/.test(s.rows.Subfolder.v), 'subfolder created: ' + s.rows.Subfolder.v);
-  assert(/^filter-probe-move-\d{6}-\d{6}\.png, /.test(s.rows['Test file'].v), 'test file named by the probe: ' + s.rows['Test file'].v);
-  eq(s.rows['Safe move'].v, 'done: copied, checked, original deleted', 'move');
-  assert(/ on both$/.test(s.rows['SHA-256'].v), 'hashes match: ' + s.rows['SHA-256'].v);
-  assert(/^caught: SHA-256 differs/.test(s.rows['Bad copy'].v), 'bad copy caught: ' + s.rows['Bad copy'].v);
-  const originals = s.list.filter((r) => r[0] === 'Original').map((r) => r[1]);
-  eq(originals, ['deleted, and no longer listed in the folder', 'kept, unchanged (same SHA-256 as before)'], 'originals');
-  assert(/^[\d.]+ ms, [\d.]+ MB\/s$/.test(s.rows['Whole move'].v), 'whole move: ' + s.rows['Whole move'].v);
-  assert(/^hash [\d.]+ ms, copy [\d.]+ ms, read back and hash [\d.]+ ms, delete [\d.]+ ms, then the check it is gone$/.test(s.rows.Times.v), 'times: ' + s.rows.Times.v);
-  assert(/^20 entries in [\d.]+ ms$/.test(s.rows['Full listing'].v), 'full listing: ' + s.rows['Full listing'].v);
-  eq(s.rows.Leftovers.v, 'none', 'no leftovers');
-  assert(/^[\d.]+ ms in Camera, [\d.]+ ms in filter-probe\/$/.test(s.rows['Name lookup'].v), 'lookups: ' + s.rows['Name lookup'].v);
-  eq(s.rows['Clean up'].v, '4 removed', 'clean up: the moved copy, the bad copy, its original, and the subfolder');
-  const after = await page.evaluate(async () => window.__fx.tree(await window.__fx.dir('DCIM/Camera')));
-  eq(after, before, 'the camera folder is exactly as it was, file for file and hash for hash');
-  assert(page.errors.length === 0, page.errors.join('; '));
+  await openCamera(page);
+  await sort(page, 2);
+  await page.click('#btn-restart');
+  eq([await screen(page), await text(page, '#btn-restart')], ['review', 'Sure?'], 'one tap asks');
+  await page.click('#btn-restart');
+  eq([await screen(page), await page.evaluate(() => window.filter.state.plan.length)], ['setup', 0], 'two taps start over');
   await ctx.close();
 });
 
-test('02 safe move: an existing filter-probe folder and its contents are left alone', async () => {
-  const { ctx, page } = await newApp();
-  await page.evaluate(async () => {
-    const cam = await window.__fx.camera();
-    const sub = await cam.getDirectoryHandle('filter-probe', { create: true });
-    await window.__fx.put(sub, 'keep.jpg', await window.__fx.jpeg(3));
-  });
-  await pick(page, 'DCIM/Camera');
-  const before = await page.evaluate(async () => window.__fx.tree(await window.__fx.dir('DCIM/Camera')));
-  await page.evaluate(() => { window.filter.config.testImageSide = 128; });
-  await run(page, '#btn-move');
-  const s = await section(page, 'move');
-  eq(s.verdict, 'pass', 'verdict');
-  eq(s.rows.Subfolder.v, 'filter-probe was already there, kept', 'subfolder');
-  eq(s.rows['Clean up'].v, '3 removed, filter-probe/ kept: it holds other files', 'only the probe files removed');
-  const after = await page.evaluate(async () => window.__fx.tree(await window.__fx.dir('DCIM/Camera')));
-  eq(after, before, 'folder and keep.jpg as before');
-  await ctx.close();
-});
-
-test('02 safe move: leftovers from a run cut off part way are cleaned up first', async () => {
-  const { ctx, page } = await newApp();
-  const clean = await page.evaluate(async () => { const cam = await window.__fx.camera(); return window.__fx.tree(cam); });
+test('real models: the classifier and face detector run offline on synthetic photos', async () => {
+  const { ctx, page } = await newApp({ models: 'real' });
   await page.evaluate(async () => {
     const fx = window.__fx, cam = await fx.dir('DCIM/Camera');
-    const sub = await cam.getDirectoryHandle('filter-probe', { create: true });
-    await fx.put(cam, 'filter-probe-move-261030-010438.png', fx.noise(2000, 4));
-    await fx.put(sub, 'filter-probe-move-261030-010438.png', fx.noise(900, 4));
-    await fx.put(sub, 'filter-probe-move-261030-010438.png.crswap', fx.noise(500, 4));
-    window.filter.config.testImageSide = 128;
+    await fx.put(cam, 'PXL_20261029_120000000.jpg', await fx.withExif(await fx.picture(2, { w: 1600, h: 1200 }), { thumb: await fx.picture(2, { w: 320, h: 240 }) }));
+    await fx.put(cam, 'PXL_20261029_110000000.jpg', await fx.withExif(await fx.picture(5, { w: 900, h: 1200 })));
+    window.__pick = cam;
   });
-  await pick(page, 'DCIM/Camera');
-  await run(page, '#btn-move');
-  const s = await section(page, 'move');
-  eq(s.verdict, 'pass', 'verdict');
-  assert(/^22 entries in /.test(s.rows['Full listing'].v), 'listing counts the leftovers too: ' + s.rows['Full listing'].v);
-  assert(/^3 from an earlier run removed: /.test(s.rows.Leftovers.v) && s.rows.Leftovers.v.includes('.crswap'), 'leftovers: ' + s.rows.Leftovers.v);
-  eq(s.rows.Subfolder.v, 'filter-probe was already there, kept', 'subfolder');
-  eq(s.rows['Clean up'].v, '4 removed', 'then the run cleans up, including the now empty subfolder');
-  const after = await page.evaluate(async () => window.__fx.tree(await window.__fx.dir('DCIM/Camera')));
-  eq(after, clean, 'camera folder back to exactly the real files');
-  await ctx.close();
-});
-
-test('03 reopen: a stored folder comes back after a reload without asking', async () => {
-  const { ctx, page } = await newApp({ persistent: true });
-  await page.evaluate(() => window.__fx.camera());
-  await pick(page, 'DCIM/Camera');
-  await page.reload(); await ready(page);
-  const s = await section(page, 'reopen');
-  eq(s.verdict, 'pass', 'verdict');
-  assert(/^Camera, picked \d\d\/\d\d\/\d\d \d{4} hrs$/.test(s.rows.Stored.v), 'stored: ' + s.rows.Stored.v);
-  assert(/browser tab, permission granted without asking, read ok in [\d.]+ ms$/.test(s.rows['Open 1'].v), 'open 1: ' + s.rows['Open 1'].v);
-  const st = await page.evaluate(() => [document.querySelector('#btn-move').disabled, document.querySelector('#status').textContent, document.querySelector('#btn-ask').hidden]);
-  eq(st, [false, 'folder ▸ Camera', true], 'folder usable straight away');
-  await page.reload(); await ready(page);
-  const s2 = await section(page, 'reopen');
-  assert(s2.rows['Open 1'] && s2.rows['Open 2'], 'each opening recorded');
-  await ctx.close();
-});
-
-test('03 reopen: when Chrome asks again, the probe records it and the ask button works', async () => {
-  const { ctx, page } = await newApp({ persistent: true });
-  await page.evaluate(() => window.__fx.camera());
-  await pick(page, 'DCIM/Camera');
-  await page.evaluate(() => localStorage.setItem('__askOnReopen', '1'));
-  await page.reload(); await ready(page);
-  let s = await section(page, 'reopen');
-  eq(s.verdict, 'watch', 'verdict before asking');
-  assert(/permission prompt without asking$/.test(s.rows['Open 1'].v), 'open 1: ' + s.rows['Open 1'].v);
-  let st = await page.evaluate(() => [document.querySelector('#btn-ask').hidden, document.querySelector('#btn-move').disabled]);
-  eq(st, [false, true], 'ask shown, folder not yet usable');
-  await run(page, '#btn-ask');
-  s = await section(page, 'reopen');
-  assert(/permission granted after asking \(granted in [\d.]+ ms\), read ok in [\d.]+ ms$/.test(s.rows['Open 1'].v), 'after asking: ' + s.rows['Open 1'].v);
-  eq(s.verdict, 'watch', 'asking is noted, not a pass');
-  st = await page.evaluate(() => [document.querySelector('#btn-ask').hidden, document.querySelector('#btn-move').disabled]);
-  eq(st, [true, false], 'folder usable after asking');
-  await ctx.close();
-});
-
-test('04 recognition: the real classifier runs offline on five photos read in place', async () => {
-  const { ctx, page } = await newApp();
-  await page.evaluate(() => window.__fx.camera());
-  await pick(page, 'DCIM/Camera');
-  const before = await page.evaluate(async () => window.__fx.tree(await window.__fx.dir('DCIM/Camera')));
-  await run(page, '#btn-recog');
-  const s = await section(page, 'recog');
-  assert(s.verdict === 'pass' || s.verdict === 'watch', 'verdict ' + s.verdict + ': ' + JSON.stringify(s.list));
-  assert(/^5 from Camera/.test(s.rows.Photos.v), 'photos: ' + s.rows.Photos.v);
-  assert(/ms to load the model$/.test(s.rows['CPU start'].v), 'cpu start');
-  for (let i = 1; i <= 5; i++) {
-    const v = (s.rows['CPU #' + i] || {}).v || '';
-    assert(/^decode [\d.]+ ms, classify [\d.]+ ms, top "[^"]+" (0|1)\.\d\d$/.test(v), 'CPU #' + i + ': ' + v);
-  }
-  assert(/min per 1000 photos$/.test(s.rows['CPU mean'].v), 'cpu mean: ' + s.rows['CPU mean'].v);
-  const gpu = s.list.filter((r) => r[0].startsWith('GPU'));
-  console.log('      GPU in headless Chromium: ' + (gpu.length ? gpu[gpu.length - 1][1] : 'no rows'));
-  const after = await page.evaluate(async () => window.__fx.tree(await window.__fx.dir('DCIM/Camera')));
-  eq(after, before, 'photos only read, folder unchanged');
-  // MediaPipe's wasm prints this start-up note through console.error; it is not a fault.
+  await run(page, '#btn-pick');
+  await sort(page);
+  eq(await screen(page), 'review', 'screen');
+  const r = await page.evaluate(() => window.filter.state.plan.map((p) => [p.category, p.reason, !!p.thumb]));
+  eq(r.length, 2, 'both photos');
+  for (const [c, reason, thumb] of r) assert(c && reason.length > 5 && thumb, 'recognised: ' + c + ', ' + reason);
+  console.log('      real models on synthetic shapes: ' + r.map((x) => x[0] + ' (' + x[1] + ')').join('; '));
   const real = page.errors.filter((e) => e !== 'INFO: Created TensorFlow Lite XNNPACK delegate for CPU.');
   assert(real.length === 0, real.join('; '));
   await ctx.close();
 });
 
-test('results: kept across a reload, copied as text, cleared with two taps', async () => {
-  const { ctx, page } = await newApp({ clipboard: true, persistent: true });
-  await page.evaluate(() => window.__fx.camera());
-  await pick(page, 'DCIM/Camera');
-  await page.reload(); await ready(page);
-  const folder = await section(page, 'folder');
-  eq(folder && folder.rows.Entries.v, '20, the whole folder', 'folder result survived the reload');
-  await page.click('#btn-copy');
-  await page.waitForSelector('#notice:not([hidden])');
-  const [clip, text] = await page.evaluate(async () => [await navigator.clipboard.readText(), window.filter.reportText()]);
-  const body = (t) => t.split('\n').slice(1).join('\n');
-  eq(body(clip), body(text), 'clipboard holds the report');
-  assert(new RegExp('^filter F0 probe v' + VERSION.replace(/\./g, '\\.') + ', report made \\d\\d/\\d\\d/\\d\\d \\d{4} hrs$').test(clip.split('\n')[0]), 'header: ' + clip.split('\n')[0]);
-  for (const h of ['00 THIS PHONE', '01 FOLDER [PASS]', '02 SAFE MOVE: not run', '03 REOPEN [PASS]', '04 RECOGNITION: not run']) assert(clip.includes(h), 'report has ' + h);
-  assert(clip.includes('  Photos: 8'), 'report has the counts');
-  assert(!clip.includes('—'), 'no em dashes');
-  await page.click('#btn-clear');
-  eq(await section(page, 'folder') !== null, true, 'one tap does not clear');
-  await page.click('#btn-clear');
-  eq(await section(page, 'folder'), null, 'two taps clear');
-  await ctx.close();
-});
-
-test('offline: the service worker caches the app, MediaPipe and the model', async () => {
+test('offline: the service worker caches the app, MediaPipe and both models', async () => {
   const { ctx, page } = await newApp({ sw: true });
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.waitForFunction(async (version) => {
     const keys = await caches.keys();
     if (!keys.includes('filter-v' + version)) return false;
     const v = keys.find((k) => k.startsWith('filter-mediapipe-'));
-    return v && (await (await caches.open(v)).keys()).length === 4;
+    return v && (await (await caches.open(v)).keys()).length === 5;
   }, VERSION, { timeout: 60000, polling: 250 });
   await ctx.setOffline(true);
   await page.reload(); await ready(page);
   const r = await page.evaluate(async () => {
     const font = await document.fonts.load('600 14px "Barlow Semi Condensed"');
-    return { title: document.title, font: font.length, model: !!(await caches.match('vendor/mediapipe/efficientnet_lite0.tflite')) };
+    return { title: document.title, font: font.length,
+      models: [!!(await caches.match('vendor/mediapipe/efficientnet_lite0.tflite')), !!(await caches.match('vendor/mediapipe/blaze_face_short_range.tflite'))] };
   });
-  eq(r, { title: 'filter', font: 1, model: true }, 'offline page, font and model');
+  eq(r, { title: 'filter', font: 1, models: [true, true] }, 'offline page, font and models');
   await ctx.close();
 });
 
