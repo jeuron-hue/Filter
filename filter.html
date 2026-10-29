@@ -12,7 +12,7 @@ scenery); photos in "other" stay where they are and are not copied. Every copy
 is read back and checked byte for byte (size and SHA-256). F1 never deletes or
 overwrites anything. Each run writes a log to filter-logs/ in the picked folder.
 
-APP_VERSION 0.1.0 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.1.1 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -27,7 +27,8 @@ change the version here in the same commit as the file.
   vendor/mediapipe/vision_wasm_internal.wasm   @mediapipe/tasks-vision 0.10.35, wasm/, Apache-2.0, copied from retouch, sha256 6a5c64584c2ab61c763b6e204afbdbc7ce1caf7f5216187322bca8df94f646bc
   vendor/mediapipe/efficientnet_lite0.tflite   MediaPipe image classifier EfficientNet-Lite0, float32, version 1 (the store's "latest" is the same file), 224 x 224 input, 1000 ImageNet classes, labels inside the model, 18.6 MB, from the MediaPipe model store (image_classifier/efficientnet_lite0/float32/1), downloaded 29/10/26, Apache-2.0 (stated in the model's own metadata and by its publisher, the TensorFlow TPU repository), sha256 6c7ab0a6e5dcbf38a8c33b960996a55a3b4300b36a018c4545801de3a3c8bde0
   vendor/mediapipe/blaze_face_short_range.tflite  MediaPipe face detector BlazeFace short range, float16, version 1 (the store's "latest" is the same file), 128 x 128 input, 230 kB, from the MediaPipe model store (face_detector/blaze_face_short_range/float16/1), downloaded 30/10/26, Apache-2.0 (model card dated 09/06/21), sha256 b4578f35940bf5a1a655214a1cce5cab13eba73c1297cd78e1a04c2380b0152f
-  vendor/mediapipe/LICENSE-apache-2.0.txt      Apache License 2.0 text from apache.org, copied from retouch, covers the five files above, sha256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
+  vendor/mediapipe/efficientdet_lite0.tflite   MediaPipe object detector EfficientDet-Lite0, int8, version 1 (the store's "latest" is the same file), 320 x 320 input, the 80 COCO objects, labels inside the model, 4.6 MB, from the MediaPipe model store (object_detector/efficientdet_lite0/int8/1), downloaded 30/10/26, Apache-2.0 (its publisher, the google/automl repository that released EfficientDet-Lite0, is Apache-2.0; unlike the classifier, the file itself states no licence and MediaPipe has no card for it), sha256 0720bf247bd76e6594ea28fa9c6f7c5242be774818997dbbeffc4da460c723bb
+  vendor/mediapipe/LICENSE-apache-2.0.txt      Apache License 2.0 text from apache.org, copied from retouch, covers the six files above, sha256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
   MediaPipe notes: the same pin as retouch. Only the SIMD build is vendored (Chrome
   on Android has had wasm SIMD since version 91). Why 0.10.35 and not 1.x: from 1.0
   the bundle carries a usage logger that posts to a Google logging server.
@@ -36,7 +37,9 @@ change the version here in the same commit as the file.
   was checked in the model metadata and the upstream repository instead. The face
   model card says it finds faces at least about 20 % of the picture's side, within
   about 2 m; filter also runs it on four overlapping quarters of each photo so
-  faces down to about half that size are found.
+  faces down to about half that size are found. The object detector finds whole
+  people (backs, crowds, heads out of frame), cats, dogs and common foods, which
+  the face detector and the classifier miss (Gary's first run, 30/10/26).
 
 How the file is laid out:
   1. Content-Security-Policy: the browser itself refuses any network call to
@@ -156,6 +159,9 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
 .ph.changed{outline:2px solid var(--amber);outline-offset:-2px}
 .ph .bad{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:10px var(--font-mono);color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
 
+#done-details summary{min-height:var(--tap);display:flex;align-items:center;cursor:pointer}
+#details-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/17px var(--font-mono);color:var(--ink-2);user-select:text}
+
 /* Bottom bar: sprockets along the film edge, the one amber action. */
 .bar{position:sticky;bottom:0;z-index:5;background:var(--chrome);border-top:1px solid var(--line);padding:0 12px max(10px,env(safe-area-inset-bottom))}
 .sprockets{height:12px;margin:0 -2px;background-image:repeating-linear-gradient(90deg,transparent 0 7px,var(--stage) 7px 16px);background-size:100% 5px;background-position:center;background-repeat:no-repeat}
@@ -254,7 +260,9 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
     </div>
     <div class="actions-col" style="align-self:center">
       <button class="btn btn-primary btn-big" id="btn-again">Back to the folder</button>
+      <button class="btn" id="btn-details">Copy run details</button>
     </div>
+    <details class="card" id="done-details"><summary class="cap">Run details: each photo, its folder and why</summary><pre id="details-text"></pre></details>
   </section>
 </main>
 
@@ -286,7 +294,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.1.1';
 
 // The folders filter knows, in the order they are shown. Photos in "other"
 // stay where they are: nothing is copied for them.
@@ -310,8 +318,16 @@ const config = {
 // The rules that turn what the models see into a folder. Each threshold is named
 // here so it can be tuned in one place.
 const RULES = {
-  faceScore: 0.6,       // a face counts from this detection confidence
-  faceSize: 0.08,       // ... and if it is at least this share of the photo's width or height
+  faceScore: 0.75,      // a face found in the whole photo counts from this confidence
+  faceScoreTile: 0.85,  // ... one found only in a quarter needs more (a hand close-up gave a false face, 30/10/26)
+  faceSize: 0.08,       // ... and it must be at least this share of the photo's width or height
+  objectScore: 0.5,     // the object detector's boxes count from this confidence
+  objectArea: 0.01,     // ... and if they cover at least this share of the photo
+  peopleCount: 2,       // people: at least this many person boxes, or
+  personArea: 0.08,     // ... one person box covering at least this share of the photo
+  personScore: 0.65,    // ... with at least this confidence
+  thingScore: 0.6,      // a cat, dog or food box decides the folder from this confidence
+  thingArea: 0.03,      // ... and this share of the photo
   topLabels: 10,        // the classifier's best labels that are added up per folder
   labelMin: 0.25,       // a folder's added-up score must reach this to win
   screenRatio: [0.40, 0.50],   // short side / long side of a phone screen (Pixel 9 Pro XL: 0.45)
@@ -325,8 +341,8 @@ const RULES = {
 const LABEL_GROUPS = {
   pets: [[1, 1, 'goldfish', 'goldfish'], [151, 268, 'Chihuahua', 'Mexican hairless'], [281, 285, 'tabby', 'Egyptian cat'],
     [330, 333, 'wood rabbit', 'hamster'], [338, 338, 'guinea pig', 'guinea pig']],
-  food: [[923, 957, 'plate', 'pomegranate'], [959, 969, 'carbonara', 'eggnog'], [809, 809, 'soup bowl', 'soup bowl'],
-    [567, 567, 'frying pan', 'frying pan'], [909, 909, 'wok', 'wok'], [762, 762, 'restaurant', 'restaurant']],
+  // Food is dishes only: "restaurant" (a room with tables) sent a classroom here on 30/10/26.
+  food: [[923, 957, 'plate', 'pomegranate'], [959, 969, 'carbonara', 'eggnog'], [809, 809, 'soup bowl', 'soup bowl']],
   documents: [[916, 918, 'web site', 'crossword puzzle'], [921, 922, 'book jacket', 'menu'], [549, 549, 'envelope', 'envelope'],
     [446, 446, 'binder', 'binder']],
   scenery: [[970, 980, 'alp', 'volcano'], [449, 449, 'boathouse', 'boathouse'], [460, 460, 'breakwater', 'breakwater'],
@@ -337,11 +353,20 @@ const LABEL_GROUPS = {
     [562, 562, 'fountain', 'fountain'], [437, 437, 'beacon', 'beacon'], [500, 500, 'cliff dwelling', 'cliff dwelling']],
 };
 
+// The object detector's labels (the 80 COCO objects) that point to a folder.
+// filter_checks.cjs checks every name against the labels inside the model.
+const OBJECT_GROUPS = {
+  people: ['person'],
+  pets: ['cat', 'dog'],
+  food: ['banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake'],
+};
+
 const MP = {
   loader: 'vendor/mediapipe/vision_wasm_internal.js',
   wasm: 'vendor/mediapipe/vision_wasm_internal.wasm',
   classifier: 'vendor/mediapipe/efficientnet_lite0.tflite',
   faces: 'vendor/mediapipe/blaze_face_short_range.tflite',
+  objects: 'vendor/mediapipe/efficientdet_lite0.tflite',
 };
 
 /* ============================================================
@@ -533,15 +558,17 @@ core.tiles = (w, h, k = 0.6) => {
 };
 
 // Faces from all the looks, measured against the whole photo (W x H). A face
-// counts if it is confident and big enough. The count is the most found in any
-// one look, so a face seen twice in overlapping looks is not counted twice.
+// counts if it is confident and big enough; one seen only in a quarter (run.full
+// false) needs more confidence. The count is the most found in any one look, so a
+// face seen twice in overlapping looks is not counted twice.
 core.facesFrom = (runs, W, H, rules = RULES) => {
   const out = { count: 0, size: 0, score: 0 };
   for (const run of runs) {
     let n = 0;
+    const min = run.full ? rules.faceScore : rules.faceScoreTile;
     for (const d of run.dets) {
       const size = Math.max(d.w / W, d.h / H);
-      if (d.score < rules.faceScore || size < rules.faceSize) continue;
+      if (d.score < min || size < rules.faceSize) continue;
       n++;
       out.size = Math.max(out.size, size);
       out.score = Math.max(out.score, d.score);
@@ -577,12 +604,33 @@ core.textLike = (d, w, h, rules = RULES.text) => {
   return m;
 };
 
+// The object detector's boxes, per folder: how many count (confident and big
+// enough), the biggest share of the photo one covers, the best confidence and its
+// label. dets: [{ name, score, w, h }] with w and h in the same units as W and H.
+core.objectsFrom = (dets, W, H, rules = RULES, groups = OBJECT_GROUPS) => {
+  const out = {};
+  for (const g of Object.keys(groups)) out[g] = { count: 0, area: 0, score: 0, name: null };
+  for (const d of dets) {
+    const area = (d.w * d.h) / (W * H);
+    if (d.score < rules.objectScore || area < rules.objectArea) continue;
+    for (const g of Object.keys(groups)) {
+      if (!groups[g].includes(d.name)) continue;
+      const o = out[g];
+      o.count++;
+      o.area = Math.max(o.area, area);
+      if (d.score > o.score) { o.score = d.score; o.name = d.name; }
+    }
+  }
+  return out;
+};
+
 core.inGroup = (index, ranges) => ranges.some(([a, z]) => index >= a && index <= z);
 
-// The rules, in order. p: { name, format, make, width, height, faces, labels, text }.
+// The rules, in order. p: { name, format, make, width, height, faces, objects, labels, text }.
 // 1 screenshots: by file name, or a screen-shaped PNG with no camera data;
-// 2 people: a face found; 3 documents: the picture looks like text;
-// 4 the folder whose labels add up highest, if high enough; 5 other.
+// 2 people: a face, or person boxes (two or more, or one big and sure one);
+// 3 documents: the picture looks like text; 4 a sure cat, dog or food box;
+// 5 the folder whose labels add up highest, if high enough; 6 other.
 core.categorize = (p, rules = RULES, groups = LABEL_GROUPS) => {
   if (/^screenshot/i.test(p.name)) return { category: 'screenshots', reason: 'screenshot by its name' };
   if (p.format === 'png' && !p.make && p.width && p.height) {
@@ -594,7 +642,16 @@ core.categorize = (p, rules = RULES, groups = LABEL_GROUPS) => {
   if (p.faces && p.faces.count > 0) {
     return { category: 'people', reason: p.faces.count + (p.faces.count === 1 ? ' face' : ' faces') + ', ' + p.faces.score.toFixed(2) };
   }
+  const ob = p.objects || {};
+  const pp = ob.people;
+  if (pp && (pp.count >= rules.peopleCount || (pp.area >= rules.personArea && pp.score >= rules.personScore))) {
+    return { category: 'people', reason: (pp.count === 1 ? 'a person' : pp.count + ' people') + ', ' + pp.score.toFixed(2) };
+  }
   if (p.text) return { category: 'documents', reason: 'mostly text' };
+  for (const g of ['pets', 'food']) {
+    const o = ob[g];
+    if (o && o.count && o.score >= rules.thingScore && o.area >= rules.thingArea) return { category: g, reason: o.name + ' ' + o.score.toFixed(2) + ' (seen)' };
+  }
   const top = (p.labels || []).slice(0, rules.topLabels);
   let best = null;
   for (const g of Object.keys(groups)) {
@@ -900,8 +957,8 @@ async function openFolder(h) {
 // models run here in WebAssembly; the photos go nowhere.
 const recog = {
   promise: null,
-  // Test seam: (entry) => { labels: [{ index, name, score }], faces: [{ w, h, score }] }
-  // with faces as shares of the photo, used instead of the models.
+  // Test seam: (entry) => { labels: [{ index, name, score }], faces: [{ w, h, score, tile }],
+  // objects: [{ name, score, w, h }] } with sizes as shares of the photo, used instead of the models.
   override: null,
   load() {
     if (this.override) return Promise.resolve(null);
@@ -913,7 +970,9 @@ const recog = {
           { baseOptions: { modelAssetPath: MP.classifier, delegate: 'CPU' }, runningMode: 'IMAGE', maxResults: RULES.topLabels });
         const detector = await mp.FaceDetector.createFromOptions(fileset,
           { baseOptions: { modelAssetPath: MP.faces, delegate: 'CPU' }, runningMode: 'IMAGE', minDetectionConfidence: 0.5 });
-        return { classifier, detector };
+        const objects = await mp.ObjectDetector.createFromOptions(fileset,
+          { baseOptions: { modelAssetPath: MP.objects, delegate: 'CPU' }, runningMode: 'IMAGE', scoreThreshold: 0.3, maxResults: 20 });
+        return { classifier, detector, objects };
       })();
       this.promise.catch(() => { this.promise = null; });     // a failed load can be tried again
     }
@@ -922,9 +981,11 @@ const recog = {
   async analyse(bmp, entry) {
     if (this.override) {
       const o = this.override(entry) || {};
-      return { labels: o.labels || [], faces: core.facesFrom([{ dets: o.faces || [] }], 1, 1) };
+      const f = o.faces || [];
+      return { labels: o.labels || [], objects: core.objectsFrom(o.objects || [], 1, 1),
+        faces: core.facesFrom([{ full: true, dets: f.filter((d) => !d.tile) }, { full: false, dets: f.filter((d) => d.tile) }], 1, 1) };
     }
-    const { classifier, detector } = await this.load();
+    const { classifier, detector, objects } = await this.load();
     const r = classifier.classify(bmp);
     const labels = r.classifications[0].categories.map((c) => ({ index: c.index, name: c.categoryName, score: c.score }));
     const runs = [];
@@ -932,10 +993,11 @@ const recog = {
       const img = t.full ? bmp : await createImageBitmap(bmp, t.x, t.y, t.w, t.h);
       try {
         const d = detector.detect(img);
-        runs.push({ dets: d.detections.map((x) => ({ w: x.boundingBox.width, h: x.boundingBox.height, score: x.categories[0].score })) });
+        runs.push({ full: !!t.full, dets: d.detections.map((x) => ({ w: x.boundingBox.width, h: x.boundingBox.height, score: x.categories[0].score })) });
       } finally { if (img !== bmp) img.close(); }
     }
-    return { labels, faces: core.facesFrom(runs, bmp.width, bmp.height) };
+    const boxes = objects.detect(bmp).detections.map((x) => ({ name: x.categories[0].categoryName, score: x.categories[0].score, w: x.boundingBox.width, h: x.boundingBox.height }));
+    return { labels, faces: core.facesFrom(runs, bmp.width, bmp.height), objects: core.objectsFrom(boxes, bmp.width, bmp.height) };
   },
 };
 
@@ -1039,7 +1101,7 @@ async function runSort() {
         const r = await recog.analyse(p.bmp, p.entry);
         const text = textCheck(p.bmp);
         const c = core.categorize({ name: p.entry.name, format: p.info.format, make: p.info.make,
-          width: p.size.w, height: p.size.h, faces: r.faces, labels: r.labels, text: text.isText });
+          width: p.size.w, height: p.size.h, faces: r.faces, objects: r.objects, labels: r.labels, text: text.isText });
         item.category = c.category;
         item.reason = c.reason;
         item.thumb = await thumbOf(p.bmp);
@@ -1182,6 +1244,8 @@ async function runCopy() {
   } catch (e) {
     out.failed = { name: '(folder)', step: 'making a folder', reason: errText(e), copyMade: false };
   }
+  // Every photo's decision, copied or not, so a run can be checked and the rules tuned.
+  log.decisions = state.plan.map((p) => ({ name: p.name, folder: p.category, suggested: p.first, reason: p.reason }));
   log.finished = new Date().toISOString();
   log.result = { copied: out.copied, skipped: out.skipped, stayed: state.plan.length - total, stopped: out.failed ? out.failed.name + ': ' + out.failed.reason : null };
   let logName = null, logError = null;
@@ -1208,7 +1272,17 @@ function showDone(out, logName, logError, ms, total) {
     ['Recognition', state.lastRun ? fmtS(state.lastRun.perPhotoMs) + ' per photo, preview used for ' + state.lastRun.previewUsed + ' of ' + state.lastRun.photos : 'none'],
     ['Log', logName || 'NOT written: ' + logError, logName ? undefined : 'fail'],
   ]);
+  $('#details-text').textContent = runDetails();
   show('done');
+}
+
+// The run as plain text: one line per photo with its folder and the reason, for
+// pasting back to Claude when a photo went to the wrong folder. Names and reasons only.
+function runDetails() {
+  const r = state.lastRun || {};
+  const head = 'filter v' + APP_VERSION + ' run ' + fmtDate(Date.now()) + ' ' + fmtTime(Date.now()) + ', ' + state.plan.length + ' photos, ' +
+    fmtS(r.perPhotoMs || 0) + ' per photo, preview used for ' + (r.previewUsed || 0);
+  return [head].concat(state.plan.map((p) => p.name + ' ▸ ' + p.category + (p.category !== p.first ? ' (filter said ' + p.first + ')' : '') + ': ' + p.reason)).join('\n');
 }
 
 /* ---------- Wiring ---------- */
@@ -1220,6 +1294,16 @@ $('#btn-sort').addEventListener('click', () => task('sorting', runSort));
 $('#btn-stop-run').addEventListener('click', () => { state.stopRequested = true; step('stopping after this photo'); });
 $('#btn-copy').addEventListener('click', () => task('copying', runCopy));
 $('#btn-again').addEventListener('click', () => task('reading the folder', () => openFolder(state.folder)));
+$('#btn-details').addEventListener('click', async () => {
+  const text = runDetails();
+  try { await navigator.clipboard.writeText(text); notice('Run details copied.'); }
+  catch (e) {
+    $('#done-details').open = true;
+    const range = document.createRange(); range.selectNodeContents($('#details-text'));
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    notice('The clipboard refused. The details are selected below: copy them by hand.');
+  }
+});
 
 // Two taps to start over, so a stray tap does not lose a reviewed plan.
 let restartArmed = 0;
@@ -1276,7 +1360,7 @@ $('#btn-install').addEventListener('click', async () => {
 
 /* ---------- Start ---------- */
 
-window.filter = { core, config, RULES, LABEL_GROUPS, CATEGORIES, recog, state, show };
+window.filter = { core, config, RULES, LABEL_GROUPS, OBJECT_GROUPS, CATEGORIES, recog, state, show, runDetails };
 
 show('start');
 window.filterReady = task('opening', boot);

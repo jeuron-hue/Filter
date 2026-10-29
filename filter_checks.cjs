@@ -11,7 +11,7 @@
 //   - the service worker caches everything and its version matches APP_VERSION
 //   - F1 copies only: nothing is deleted, and files are written only by the
 //     safe copy and the run log
-//   - the sorting rules' label names match the labels inside the model
+//   - the sorting rules' label names match the labels inside the two models
 //   - every image in the repo carries no EXIF, XMP, IPTC, GPS or text chunks
 //
 // Run: node filter_checks.cjs
@@ -321,13 +321,25 @@ function runChecks() {
     return ranges.length + ' ranges, ' + seen.size + ' labels';
   });
 
+  check('object groups match the labels inside the object detector', () => {
+    const labels = modelLabels('vendor/mediapipe/efficientdet_lite0.tflite');
+    assert(labels.length >= 80 && labels[0] === 'person', 'expected the COCO labels, person first; found ' + labels.length + ' starting ' + labels[0]);
+    const m = read('filter.html').match(/const OBJECT_GROUPS = \{([\s\S]*?)\n\};/);
+    assert(m, 'OBJECT_GROUPS not found');
+    const names = Array.from(m[1].matchAll(/'([^']+)'/g)).map((x) => x[1]);
+    const missing = names.filter((n) => !labels.includes(n));
+    assert(!missing.length, 'not labels of the model: ' + missing.join(', '));
+    assert(new Set(names).size === names.length, 'a label is in two groups');
+    return names.length + ' labels';
+  });
+
   check('CORE block marked for the tests and the mutation runner', () => {
     const html = read('filter.html');
     const a = html.indexOf('// CORE:BEGIN'), b = html.indexOf('// CORE:END');
     assert(a > 0 && b > a, 'CORE markers missing or out of order');
     assert(html.split('// CORE:BEGIN').length === 2 && html.split('// CORE:END').length === 2, 'CORE markers must appear once each');
     const core = html.slice(a, b);
-    for (const f of ['safeCopy', 'categorize', 'imageInfo', 'pickNewest', 'readBatch', 'facesFrom', 'textLike', 'mapAhead']) {
+    for (const f of ['safeCopy', 'categorize', 'imageInfo', 'pickNewest', 'readBatch', 'facesFrom', 'objectsFrom', 'textLike', 'mapAhead']) {
       assert(new RegExp('core\\.' + f + ' = ').test(core), 'core.' + f + ' must sit inside CORE');
     }
   });
