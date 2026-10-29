@@ -177,16 +177,19 @@ function pageFixtures() {
         await this.put(cam, name, await this.withExif(pic));
         A[name] = answer;
       };
-      await photo('PXL_20261029_101000000.jpg', 0, { faces: [{ w: 0.3, h: 0.35, score: 0.95 }] });
+      // Like Gary's classroom photo (30/10/26): small people, faces turned away, a room of tables.
+      await photo('PXL_20261029_101000000.jpg', 0, { labels: [{ index: 762, name: 'restaurant', score: 0.5 }],
+        objects: [0.1, 0.4, 0.7].map((x) => ({ name: 'person', score: 0.7, w: 0.15, h: 0.3, x })) });
       await photo('PXL_20261029_100900000.jpg', 1, { labels: [{ index: 207, name: 'golden retriever', score: 0.4 }, { index: 208, name: 'Labrador retriever', score: 0.2 }] });
       await photo('PXL_20261029_100800000.jpg', 2, { labels: [{ index: 963, name: 'pizza', score: 0.7 }] });
       await photo('PXL_20261029_100700000.jpg', 3, { labels: [{ index: 978, name: 'seashore', score: 0.3 }, { index: 975, name: 'lakeside', score: 0.1 }] });
       await photo('PXL_20261029_100600000.jpg', 4, {}, { blob: await this.textPage() });
-      await photo('PXL_20261029_100500000.jpg', 5, { labels: [{ index: 600, name: 'hook', score: 0.12 }] });
+      // Like Gary's hand close-up (30/10/26): a false face, seen only in a quarter of the photo.
+      await photo('PXL_20261029_100500000.jpg', 5, { labels: [{ index: 600, name: 'hook', score: 0.12 }], faces: [{ w: 0.3, h: 0.35, score: 0.8, tile: true }] });
       await this.put(cam, 'Screenshot_20261029-100400.png', await this.picture(6, { w: 540, h: 1200, type: 'image/png' }));
       await this.put(cam, 'IMG_20261029_100300.png', await this.picture(7, { w: 1344, h: 2992, type: 'image/png' }));
       await photo('PXL_20261029_100200000.jpg', 6, { faces: [{ w: 0.2, h: 0.2, score: 0.9 }, { w: 0.15, h: 0.18, score: 0.8 }] });
-      await photo('PXL_20250101_120000000.jpg', 7, { labels: [{ index: 281, name: 'tabby', score: 0.6 }] });
+      await photo('PXL_20250101_120000000.jpg', 7, { objects: [{ name: 'cat', score: 0.8, w: 0.5, h: 0.4 }], labels: [{ index: 600, name: 'hook', score: 0.2 }] });
       for (let i = 0; i < 2; i++) await this.put(cam, 'PXL_20261029_11' + i + '000000.mp4', this.noise(3000 + i, i + 7));
       await this.put(cam, '.trashed-1767225600-PXL_20261001_090000000.jpg', await this.picture(9));
       await this.put(cam, 'notes.txt', new TextEncoder().encode('not a photo'));
@@ -272,7 +275,7 @@ function pageFixtures() {
 // stored folder handle is read back from IndexedDB (seen with Playwright 1.63,
 // 29/10/26); a normal profile, like the one on the phone, does not. Tests that
 // reopen the app after picking a folder need it.
-async function newApp({ sw = false, persistent = false, models = 'stand-in' } = {}) {
+async function newApp({ sw = false, persistent = false, models = 'stand-in', clipboard = false } = {}) {
   const opts = { viewport: { width: 412, height: 915 }, deviceScaleFactor: 2, hasTouch: true, serviceWorkers: sw ? 'allow' : 'block' };
   let ctx;
   if (persistent) {
@@ -281,6 +284,7 @@ async function newApp({ sw = false, persistent = false, models = 'stand-in' } = 
     const close = ctx.close.bind(ctx);
     ctx.close = async () => { await close(); fs.rmSync(dir, { recursive: true, force: true }); };
   } else ctx = await browser.newContext(opts);
+  if (clipboard) await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE });
   ctx.on('request', (r) => {
     const u = new URL(r.url());
     if (u.protocol === 'blob:' || u.protocol === 'data:') return;
@@ -551,26 +555,42 @@ test('orientMatrix turns each EXIF orientation upright; orientedSize swaps for q
 
 /* ---------- Core: the sorting rules ---------- */
 
-test('tiles and facesFrom: five looks, faces measured against the whole photo, never counted twice', async () => {
+test('tiles and facesFrom: five looks, a quarter needs more confidence, never counted twice', async () => {
   const { ctx, page } = await newApp();
   const r = await page.evaluate(() => {
     const c = window.filter.core;
     const t = c.tiles(500, 400);
     const runs = [
-      { dets: [{ w: 100, h: 90, score: 0.9 }, { w: 30, h: 30, score: 0.95 }, { w: 80, h: 80, score: 0.55 }] },   // one big enough and sure enough
-      { dets: [{ w: 60, h: 60, score: 0.7 }, { w: 50, h: 45, score: 0.8 }] },                                   // two in one corner
-      { dets: [] },
+      { full: true, dets: [{ w: 100, h: 90, score: 0.9 }, { w: 30, h: 30, score: 0.95 }, { w: 80, h: 80, score: 0.74 }] },   // one counts
+      { full: false, dets: [{ w: 60, h: 60, score: 0.86 }, { w: 50, h: 45, score: 0.9 }] },                                  // two in one quarter
+      { full: false, dets: [{ w: 120, h: 120, score: 0.84 }] },                                                              // big but not sure enough for a quarter
     ];
-    return { t, f: c.facesFrom(runs, 500, 400), none: c.facesFrom([{ dets: [{ w: 39, h: 31, score: 0.99 }] }], 500, 400),
-      edge: c.facesFrom([{ dets: [{ w: 40, h: 10, score: 0.6 }] }], 500, 400), unsure: c.facesFrom([{ dets: [{ w: 200, h: 200, score: 0.59 }] }], 500, 400), tall: c.facesFrom([{ dets: [{ w: 10, h: 32, score: 0.7 }] }], 500, 400) };
+    const one = (full, d) => c.facesFrom([{ full, dets: [d] }], 500, 400);
+    return { t, f: c.facesFrom(runs, 500, 400),
+      small: one(true, { w: 39, h: 31, score: 0.99 }), fullEdge: one(true, { w: 40, h: 10, score: 0.75 }), fullUnder: one(true, { w: 200, h: 200, score: 0.749 }),
+      tileEdge: one(false, { w: 200, h: 200, score: 0.85 }), tileUnder: one(false, { w: 200, h: 200, score: 0.849 }), tall: one(true, { w: 10, h: 32, score: 0.8 }) };
   });
   eq(r.t, [{ x: 0, y: 0, w: 500, h: 400, full: true }, { x: 0, y: 0, w: 300, h: 240 }, { x: 200, y: 0, w: 300, h: 240 },
     { x: 0, y: 160, w: 300, h: 240 }, { x: 200, y: 160, w: 300, h: 240 }], 'tiles');
-  eq(r.f, { count: 2, size: 0.225, score: 0.9 }, 'faces (90 px of 400 tall)');
-  eq(r.none, { count: 0, size: 0, score: 0 }, 'too small (under 8 % of width and height)');
-  eq(r.edge.count, 1, 'exactly at both thresholds counts');
-  eq(r.unsure, { count: 0, size: 0, score: 0 }, 'a big face under the confidence threshold does not count');
+  eq(r.f, { count: 2, size: 0.225, score: 0.9 }, 'faces');
+  eq(r.small.count, 0, 'too small (under 8 % of width and height)');
+  eq([r.fullEdge.count, r.fullUnder.count], [1, 0], 'whole photo: 0.75 counts, just under does not');
+  eq([r.tileEdge.count, r.tileUnder.count], [1, 0], 'a quarter: 0.85 counts, just under does not');
   eq([r.tall.count, r.tall.size], [1, 0.08], 'tall face measured against the height');
+  await ctx.close();
+}, { core: true });
+
+test('objectsFrom: boxes per folder, confident and big enough, biggest and best kept', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const c = window.filter.core;
+    const d = (name, score, w, h) => ({ name, score, w, h });
+    return c.objectsFrom([d('person', 0.9, 100, 200), d('person', 0.5, 50, 80), d('person', 0.49, 300, 300), d('person', 0.95, 20, 19),
+      d('dog', 0.7, 150, 150), d('cat', 0.8, 60, 60), d('pizza', 0.65, 100, 100), d('laptop', 0.99, 300, 200), d('bowl', 0.9, 200, 200)], 500, 400);
+  });
+  eq(r.people, { count: 2, area: 0.1, score: 0.9, name: 'person' }, 'people: two count (one unsure, one too small)');
+  eq(r.pets, { count: 2, area: 0.1125, score: 0.8, name: 'cat' }, 'pets: best is the cat, biggest the dog');
+  eq(r.food, { count: 1, area: 0.05, score: 0.65, name: 'pizza' }, 'food: a bowl is not food');
   await ctx.close();
 }, { core: true });
 
@@ -636,6 +656,17 @@ test('categorize: the rules in order, each threshold at its edge', async () => {
       ends: { ...base, labels: [L(151, 'Chihuahua', 0.13), L(268, 'Mexican hairless', 0.13)] },
       outside: { ...base, labels: [L(269, 'timber wolf', 0.6), L(150, 'sea lion', 0.6), L(958, 'hay', 0.9)] },
       empty: { ...base },
+      crowd: { ...base, objects: { people: { count: 2, area: 0.02, score: 0.55, name: 'person' } } },
+      onePersonBig: { ...base, objects: { people: { count: 1, area: 0.08, score: 0.65, name: 'person' } } },
+      onePersonSmall: { ...base, objects: { people: { count: 1, area: 0.079, score: 0.9, name: 'person' } } },
+      onePersonUnsure: { ...base, objects: { people: { count: 1, area: 0.5, score: 0.649, name: 'person' } } },
+      textOverDog: { ...base, text: true, objects: { pets: { count: 1, area: 0.5, score: 0.9, name: 'dog' } } },
+      dogSeen: { ...base, objects: { pets: { count: 1, area: 0.03, score: 0.6, name: 'dog' } }, labels: [L(963, 'pizza', 0.9)] },
+      dogSmall: { ...base, objects: { pets: { count: 1, area: 0.029, score: 0.9, name: 'dog' } } },
+      dogUnsure: { ...base, objects: { pets: { count: 1, area: 0.3, score: 0.59, name: 'dog' } } },
+      cakeSeen: { ...base, objects: { food: { count: 1, area: 0.2, score: 0.7, name: 'cake' } } },
+      petsBeforeFood: { ...base, objects: { pets: { count: 1, area: 0.1, score: 0.7, name: 'cat' }, food: { count: 1, area: 0.4, score: 0.9, name: 'pizza' } } },
+      restaurant: { ...base, labels: [L(762, 'restaurant', 0.6), L(567, 'frying pan', 0.2), L(909, 'wok', 0.2)] },
     };
     return Object.fromEntries(Object.entries(cases).map(([k, v]) => [k, c.categorize(v)]));
   });
@@ -654,6 +685,14 @@ test('categorize: the rules in order, each threshold at its edge', async () => {
   eq(cat('ends'), 'pets', 'both ends of a range count');
   eq([cat('outside'), r.outside.reason], ['other', 'nothing clear (best guess: timber wolf 0.60)'], 'labels just outside the groups');
   eq([cat('empty'), r.empty.reason], ['other', 'nothing clear'], 'nothing at all');
+  eq([cat('crowd'), r.crowd.reason], ['people', '2 people, 0.55'], 'two person boxes are people');
+  eq([cat('onePersonBig'), r.onePersonBig.reason], ['people', 'a person, 0.65'], 'one big sure person, at both edges');
+  eq([cat('onePersonSmall'), cat('onePersonUnsure')], ['other', 'other'], 'one person too small or too unsure');
+  eq(cat('textOverDog'), 'documents', 'text comes before a seen dog');
+  eq([cat('dogSeen'), r.dogSeen.reason], ['pets', 'dog 0.60 (seen)'], 'a seen dog beats food labels, at both edges');
+  eq([cat('dogSmall'), cat('dogUnsure')], ['other', 'other'], 'a dog too small or too unsure');
+  eq([cat('cakeSeen'), cat('petsBeforeFood')], ['food', 'pets'], 'seen food; pets before food');
+  eq(cat('restaurant'), 'other', 'a restaurant, a frying pan or a wok is not food');
   await ctx.close();
 }, { core: true });
 
@@ -843,6 +882,9 @@ test('run and review: each photo lands in the right folder, grid per folder, oth
   eq(r.reasons['PXL_20261029_100900000.jpg'], 'golden retriever 0.40, pets 0.60', 'reason kept for the sheet');
   eq(r.reasons['IMG_20261029_100300.png'], 'screen-sized picture with no camera data', 'screenshot by shape');
   eq(r.reasons['PXL_20261029_100600000.jpg'], 'mostly text', 'text page found by the real text check');
+  eq(r.reasons['PXL_20261029_101000000.jpg'], '3 people, 0.70', 'the classroom: people from the person boxes, not food from "restaurant"');
+  eq(r.reasons['PXL_20261029_100500000.jpg'], 'nothing clear (best guess: hook 0.12)', 'the hand close-up: a quarter-only face at 0.80 is not enough');
+  eq(r.reasons['PXL_20250101_120000000.jpg'], 'cat 0.80 (seen)', 'a cat box');
   eq(r.overflow, false, 'no sideways scroll');
   assert(page.errors.length === 0, page.errors.join('; '));
   await ctx.close();
@@ -875,8 +917,8 @@ test('review: tapping a photo and choosing a folder sends it there, marked in am
   await ctx.close();
 });
 
-test('copy: every copy lands in its folder byte-identical, originals untouched, log written', async () => {
-  const { ctx, page } = await newApp();
+test('copy: every copy lands in its folder byte-identical, originals untouched, log and run details written', async () => {
+  const { ctx, page } = await newApp({ clipboard: true });
   await openCamera(page);
   const before = await camTree(page);
   await sort(page);
@@ -899,6 +941,8 @@ test('copy: every copy lands in its folder byte-identical, originals untouched, 
   eq([log.app, log.version, log.mode, log.folder], ['filter', VERSION, 'copy', 'Camera'], 'log header');
   eq(log.result, { copied: 8, skipped: 0, stayed: 2, stopped: null }, 'log result');
   eq(log.items.length, 8, 'one line per copy');
+  eq(log.decisions.length, 10, 'every decision logged, copied or not');
+  eq(log.decisions.find((x) => x.name === 'PXL_20261029_100900000.jpg'), { name: 'PXL_20261029_100900000.jpg', folder: 'other', suggested: 'pets', reason: 'golden retriever 0.40, pets 0.60' }, 'a changed decision');
   for (const it of log.items) {
     eq([it.ok, it.sha256, it.copySha256, it.from], [true, before[it.name], before[it.name], '.'], it.name + ' logged with its hashes');
     assert(want[it.to].includes(it.name), it.name + ' logged in the right folder');
@@ -907,6 +951,15 @@ test('copy: every copy lands in its folder byte-identical, originals untouched, 
   eq(d.Copied, '8 of 8, each read back and checked (size and SHA-256)', 'done: copied');
   eq([d['Already there'], d.Stayed, d['You changed'], d.Log], ['0', '2 in other, not copied', '1 of 10', 'filter-logs/' + logs[0]], 'done rows');
   eq(await text(page, '#done-title'), 'Done', 'title');
+  await page.click('#btn-details');
+  await page.waitForSelector('#notice:not([hidden])');
+  const clip = await page.evaluate(() => navigator.clipboard.readText());
+  const lines = clip.split('\n');
+  assert(new RegExp('^filter v' + VERSION.replace(/\./g, '\\.') + ' run \\d\\d/\\d\\d/\\d\\d \\d{4} hrs, 10 photos, ').test(lines[0]), 'details header: ' + lines[0]);
+  eq(lines.length, 11, 'a line per photo');
+  assert(lines.includes('PXL_20261029_100900000.jpg ▸ other (filter said pets): golden retriever 0.40, pets 0.60'), 'changed photo line');
+  assert(lines.includes('PXL_20261029_101000000.jpg ▸ people: 3 people, 0.70'), 'classroom line');
+  eq(await text(page, '#details-text'), clip, 'the same text on screen');
   assert(page.errors.length === 0, page.errors.join('; '));
   await ctx.close();
 });
@@ -1049,7 +1102,7 @@ test('start over needs two taps', async () => {
   await ctx.close();
 });
 
-test('real models: the classifier and face detector run offline on synthetic photos', async () => {
+test('real models: the classifier, face detector and object detector run offline on synthetic photos', async () => {
   const { ctx, page } = await newApp({ models: 'real' });
   await page.evaluate(async () => {
     const fx = window.__fx, cam = await fx.dir('DCIM/Camera');
@@ -1069,23 +1122,23 @@ test('real models: the classifier and face detector run offline on synthetic pho
   await ctx.close();
 });
 
-test('offline: the service worker caches the app, MediaPipe and both models', async () => {
+test('offline: the service worker caches the app, MediaPipe and the three models', async () => {
   const { ctx, page } = await newApp({ sw: true });
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.waitForFunction(async (version) => {
     const keys = await caches.keys();
     if (!keys.includes('filter-v' + version)) return false;
     const v = keys.find((k) => k.startsWith('filter-mediapipe-'));
-    return v && (await (await caches.open(v)).keys()).length === 5;
+    return v && (await (await caches.open(v)).keys()).length === 6;
   }, VERSION, { timeout: 60000, polling: 250 });
   await ctx.setOffline(true);
   await page.reload(); await ready(page);
   const r = await page.evaluate(async () => {
     const font = await document.fonts.load('600 14px "Barlow Semi Condensed"');
     return { title: document.title, font: font.length,
-      models: [!!(await caches.match('vendor/mediapipe/efficientnet_lite0.tflite')), !!(await caches.match('vendor/mediapipe/blaze_face_short_range.tflite'))] };
+      models: await Promise.all(['efficientnet_lite0', 'blaze_face_short_range', 'efficientdet_lite0'].map(async (m) => !!(await caches.match('vendor/mediapipe/' + m + '.tflite')))) };
   });
-  eq(r, { title: 'filter', font: 1, models: [true, true] }, 'offline page, font and models');
+  eq(r, { title: 'filter', font: 1, models: [true, true, true] }, 'offline page, font and the three models');
   await ctx.close();
 });
 

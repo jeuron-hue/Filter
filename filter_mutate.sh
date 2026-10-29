@@ -66,9 +66,17 @@ orient: 3 not flipped vertically ||| 3: [-1, 0, 0, -1, w, h] ||| 3: [-1, 0, 0, 1
 orient: 8 mirrored ||| 8: [0, -1, 1, 0, 0, w] ||| 8: [0, 1, 1, 0, 0, 0]
 tiles: corners too small ||| core.tiles = (w, h, k = 0.6) => { ||| core.tiles = (w, h, k = 0.5) => {
 tiles: right corner at the left ||| { x: w - tw, y: 0, w: tw, h: th } ||| { x: 0, y: 0, w: tw, h: th }
-faces: confidence ignored ||| if (d.score < rules.faceScore || size < rules.faceSize) continue; ||| if (size < rules.faceSize) continue;
-faces: size ignored ||| if (d.score < rules.faceScore || size < rules.faceSize) continue; ||| if (d.score < rules.faceScore) continue;
-faces: confidence edge excluded ||| if (d.score < rules.faceScore || ||| if (d.score <= rules.faceScore ||
+faces: confidence ignored ||| if (d.score < min || size < rules.faceSize) continue; ||| if (size < rules.faceSize) continue;
+faces: size ignored ||| if (d.score < min || size < rules.faceSize) continue; ||| if (d.score < min) continue;
+faces: confidence edge excluded ||| if (d.score < min || ||| if (d.score <= min ||
+faces: a quarter as easy as the whole ||| const min = run.full ? rules.faceScore : rules.faceScoreTile; ||| const min = rules.faceScore;
+faces: the whole as hard as a quarter ||| const min = run.full ? rules.faceScore : rules.faceScoreTile; ||| const min = rules.faceScoreTile;
+objects: confidence ignored ||| if (d.score < rules.objectScore || area < rules.objectArea) continue; ||| if (area < rules.objectArea) continue;
+objects: size ignored ||| if (d.score < rules.objectScore || area < rules.objectArea) continue; ||| if (d.score < rules.objectScore) continue;
+objects: area from the width alone ||| const area = (d.w * d.h) / (W * H); ||| const area = d.w / W;
+objects: biggest not kept ||| o.area = Math.max(o.area, area); ||| o.area = area;
+objects: best not kept ||| if (d.score > o.score) { o.score = d.score; o.name = d.name; } ||| { o.score = d.score; o.name = d.name; }
+objects: every label in every group ||| if (!groups[g].includes(d.name)) continue; ||| /* removed */
 faces: height not measured ||| const size = Math.max(d.w / W, d.h / H); ||| const size = d.w / W;
 faces: counted twice across looks ||| out.count = Math.max(out.count, n); ||| out.count += n;
 text: colour not checked ||| m.sat <= rules.satMax && m.edges >= rules.edgeMin; ||| m.edges >= rules.edgeMin;
@@ -82,6 +90,14 @@ rules: small screens accepted ||| if (long >= rules.screenLong && ||| if (
 rules: wide pictures accepted ||| short / long >= rules.screenRatio[0] ||| short / long >= 0
 rules: square pictures accepted ||| short / long <= rules.screenRatio[1] ||| short / long <= 1
 rules: faces ignored ||| if (p.faces && p.faces.count > 0) { ||| if (false) {
+rules: person boxes ignored ||| if (pp && (pp.count >= rules.peopleCount || ||| if (pp && (false ||
+rules: one person box enough ||| pp.count >= rules.peopleCount ||| pp.count >= 1
+rules: one small person enough ||| (pp.area >= rules.personArea && pp.score >= rules.personScore) ||| (pp.score >= rules.personScore)
+rules: one unsure person enough ||| (pp.area >= rules.personArea && pp.score >= rules.personScore) ||| (pp.area >= rules.personArea)
+rules: seen pets and food ignored ||| if (o && o.count && o.score >= rules.thingScore && o.area >= rules.thingArea) return ||| if (false) return
+rules: unsure things accepted ||| o.count && o.score >= rules.thingScore && ||| o.count &&
+rules: small things accepted ||| o.area >= rules.thingArea) return ||| true) return
+rules: food before pets ||| for (const g of ['pets', 'food']) { ||| for (const g of ['food', 'pets']) {
 rules: text ignored ||| if (p.text) return { category: 'documents' ||| if (false) return { category: 'documents'
 rules: all labels counted ||| const top = (p.labels || []).slice(0, rules.topLabels); ||| const top = (p.labels || []);
 rules: first group wins ||| if (mine.length && (!best || sum > best.sum)) ||| if (mine.length && !best)

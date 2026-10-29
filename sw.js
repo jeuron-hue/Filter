@@ -12,11 +12,11 @@
 // in filter.html (filter_checks.cjs fails if they differ). A new version makes
 // the browser install a fresh worker, and the app shows "Update available".
 
-const CACHE_VERSION = '0.1.0';
+const CACHE_VERSION = '0.1.1';
 const CACHE = 'filter-v' + CACHE_VERSION;
 // Must name the @mediapipe/tasks-vision version in the filter.html build notes
 // (filter_checks.cjs enforces it). Change the suffix whenever a file below changes.
-const VENDOR_CACHE = 'filter-mediapipe-0.10.35-2';
+const VENDOR_CACHE = 'filter-mediapipe-0.10.35-3';
 
 const SHELL = [
   './',
@@ -39,6 +39,7 @@ const VENDOR = [
   'vendor/mediapipe/vision_wasm_internal.wasm',
   'vendor/mediapipe/efficientnet_lite0.tflite',
   'vendor/mediapipe/blaze_face_short_range.tflite',
+  'vendor/mediapipe/efficientdet_lite0.tflite',
 ];
 
 self.addEventListener('install', (event) => {
