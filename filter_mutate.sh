@@ -54,7 +54,8 @@ move: never checks the original is gone ||| log.originalGone = !(await core.exis
 move: original still there is fine ||| if (!log.originalGone) { log.kept = 'both'; log.reason = 'the original is still listed after the delete'; return log; } ||| /* removed */
 move: failed write not reported ||| try { await w.abort(); } catch (_) { /* already closed */ }\n      throw e; ||| try { await w.abort(); } catch (_) { /* already closed */ }
 move: says only the original is kept after copying ||| log.kept = 'both';\n    const w ||| log.kept = 'original';\n    const w
-move: ok set before the delete ||| log.step = 'delete original'; ||| log.step = 'delete original'; log.ok = true;
+move: ok set before the delete ||| at('delete original'); ||| at('delete original'); log.ok = true;
+move: steps not reported ||| const at = (s) => { log.step = s; if (opts.onStep) opts.onStep(s); }; ||| const at = (s) => { log.step = s; };
 move: hash taken of nothing ||| log.sha256 = await core.sha256(orig); ||| log.sha256 = await core.sha256(new Blob([]));
 EOF
 )

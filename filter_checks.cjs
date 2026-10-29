@@ -287,7 +287,7 @@ function runChecks() {
     }
     assert(/removeEntry\(PROBE_FOLDER\)/.test(removeFolder), 'removeProbeFolder may only remove PROBE_FOLDER');
     // In the safe move the delete comes after the read back and both comparisons.
-    const order = ['getFile()', 'createWritable(', "log.step = 'read back'", 'copy.size !== orig.size', 'log.copySha256 !== log.sha256', 'removeEntry('].map((s) => safeMove.indexOf(s));
+    const order = ['getFile()', 'createWritable(', "at('read back')", 'copy.size !== orig.size', 'log.copySha256 !== log.sha256', 'removeEntry('].map((s) => safeMove.indexOf(s));
     assert(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1])), 'core.safeMove must read, copy, read back, compare size, compare SHA-256, and only then delete');
     const prefix = (js.match(/const PROBE_PREFIX = '([^']+)'/) || [])[1];
     assert(prefix === 'filter-probe-', 'PROBE_PREFIX should be filter-probe-, got ' + prefix);
