@@ -339,7 +339,7 @@ function runChecks() {
     assert(a > 0 && b > a, 'CORE markers missing or out of order');
     assert(html.split('// CORE:BEGIN').length === 2 && html.split('// CORE:END').length === 2, 'CORE markers must appear once each');
     const core = html.slice(a, b);
-    for (const f of ['safeCopy', 'categorize', 'imageInfo', 'pickNewest', 'readBatch', 'facesFrom', 'objectsFrom', 'normBoxes', 'dedupe', 'grid', 'textLike', 'mapAhead']) {
+    for (const f of ['safeCopy', 'categorize', 'imageInfo', 'pickNewest', 'readBatch', 'facesFrom', 'objectsFrom', 'normBoxes', 'dedupe', 'closerPeople', 'grid', 'textLike', 'mapAhead']) {
       assert(new RegExp('core\\.' + f + ' = ').test(core), 'core.' + f + ' must sit inside CORE');
     }
   });

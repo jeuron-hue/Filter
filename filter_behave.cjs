@@ -190,8 +190,13 @@ function pageFixtures() {
       await photo('PXL_20261029_100600000.jpg', 4, {}, { blob: await this.textPage() });
       // Like Gary's hand close-up (30/10/26): a false face, seen only in a quarter of the photo.
       // Its closer look "sees" a pizza: the closer look decides people only (third run, 30/10/26).
+      // Like the hand with a bottle (fourth run): a "person" filling the frame, and pieces
+      // of the hand called people in three of the closer look's parts.
       await photo('PXL_20261029_100500000.jpg', 5, { labels: [{ index: 600, name: 'hook', score: 0.12 }], faces: [{ w: 0.3, h: 0.35, score: 0.8, tile: true }],
-        closer: { objects: [{ name: 'pizza', score: 0.8, x: 0.2, y: 0.2, w: 0.4, h: 0.4 }] } });
+        objects: [{ name: 'person', score: 0.89, x: 0.02, y: 0, w: 0.95, h: 0.98 }],
+        closer: { objects: [{ name: 'pizza', score: 0.8, x: 0.2, y: 0.2, w: 0.4, h: 0.4 },
+          { name: 'person', score: 0.84, x: 0, y: 0, w: 0.4, h: 0.45 }, { name: 'person', score: 0.8, x: 0.55, y: 0, w: 0.4, h: 0.45 },
+          { name: 'person', score: 0.75, x: 0.3, y: 0.55, w: 0.4, h: 0.45 }] } });
       await this.put(cam, 'Screenshot_20261029-100400.png', await this.picture(6, { w: 540, h: 1200, type: 'image/png' }));
       await this.put(cam, 'IMG_20261029_100300.png', await this.picture(7, { w: 1344, h: 2992, type: 'image/png' }));
       await photo('PXL_20261029_100200000.jpg', 6, { faces: [{ w: 0.2, h: 0.2, score: 0.9 }, { w: 0.15, h: 0.18, score: 0.8 }] });
@@ -563,12 +568,19 @@ test('objectsFrom: boxes per folder, confident and big enough, biggest and best 
   const r = await page.evaluate(() => {
     const c = window.filter.core;
     const d = (name, score, w, h) => ({ name, score, x: 0, y: 0, w, h });
-    return c.objectsFrom([d('person', 0.9, 0.2, 0.5), d('person', 0.5, 0.1, 0.2), d('person', 0.49, 0.6, 0.75), d('person', 0.95, 0.1, 0.0995),
-      d('dog', 0.7, 0.25, 0.5), d('cat', 0.8, 0.12, 0.15), d('pizza', 0.65, 0.2, 0.25), d('laptop', 0.99, 0.6, 0.5), d('bowl', 0.9, 0.4, 0.5)]);
+    // The biggest boxes come first, so keeping the last one's size instead of the biggest would show.
+    return c.objectsFrom([d('person', 0.7, 0.9, 0.899), d('cat', 0.9, 0.95, 0.95), d('person', 0.6, 0.9, 0.9),
+      d('person', 0.9, 0.2, 0.5), d('person', 0.49, 0.6, 0.75), d('person', 0.95, 0.1, 0.0995),
+      d('dog', 0.7, 0.25, 0.5), d('cat', 0.8, 0.12, 0.15), d('pizza', 0.65, 0.2, 0.25), d('laptop', 0.99, 0.6, 0.5), d('bowl', 0.9, 0.4, 0.5), d('person', 0.5, 0.1, 0.2)]);
   });
-  eq(r.people, { count: 2, area: 0.1, score: 0.9, name: 'person', best: 0.95 }, 'people: two count (one unsure, one too small); best of any box 0.95');
-  eq(r.pets, { count: 2, area: 0.125, score: 0.8, name: 'cat', best: 0.8 }, 'pets: best is the cat, biggest the dog');
-  eq(r.food, { count: 1, area: 0.05, score: 0.65, name: 'pizza', best: 0.65 }, 'food: a bowl is not food');
+  eq(r.people, { count: 3, area: 0.8091, score: 0.9, name: 'person', best: 0.95, filled: 1 },
+    'people: three count (one unsure, one too small); one fills the frame at 0.9 x 0.9; one just short of it counts');
+  eq(r.pets, { count: 3, area: 0.9025, score: 0.9, name: 'cat', best: 0.9, filled: 0 }, 'pets: a cat filling the frame is still a cat');
+  eq(r.food, { count: 1, area: 0.05, score: 0.65, name: 'pizza', best: 0.65, filled: 0 }, 'food: a bowl is not food');
+  const near = await page.evaluate(() => window.filter.core.closerPeople([
+    { name: 'person', score: 0.7, x: 0, y: 0, w: 0.3, h: 0.4 }, { name: 'person', score: 0.7, x: 0, y: 0, w: 0.3, h: 0.401 },
+    { name: 'dog', score: 0.9, x: 0, y: 0, w: 0.1, h: 0.1 }, { name: 'person', score: 0.5, x: 0, y: 0, w: 0.1, h: 0.2 }]).map((b) => b.name + ' ' + b.h));
+  eq(near, ['person 0.4', 'person 0.2'], 'the closer look adds people up to 12 % of the photo, and nothing else');
   await ctx.close();
 }, { core: true });
 
@@ -687,6 +699,7 @@ test('categorize: the rules in order, each threshold at its edge', async () => {
       restaurant: { ...base, labels: [L(762, 'restaurant', 0.6), L(567, 'frying pan', 0.2), L(909, 'wok', 0.2)] },
       weakPerson: { ...base, labels: [L(526, 'desk', 0.16)], objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.41 } } },
       weakPersonOnly: { ...base, objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.38 } } },
+      closeUp: { ...base, labels: [L(600, 'hook', 0.1)], objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.89, filled: 1 } } },
     };
     return Object.fromEntries(Object.entries(cases).map(([k, v]) => [k, c.categorize(v)]));
   });
@@ -715,6 +728,7 @@ test('categorize: the rules in order, each threshold at its edge', async () => {
   eq(cat('restaurant'), 'other', 'a restaurant, a frying pan or a wok is not food');
   eq(r.weakPerson.reason, 'nothing clear (best guess: desk 0.16; best person 0.41)', 'other shows the best person score');
   eq(r.weakPersonOnly.reason, 'nothing clear (best person 0.38)', 'with no labels too');
+  eq([cat('closeUp'), r.closeUp.reason], ['other', 'nothing clear (best guess: hook 0.10; best person 0.89; a person fills the frame: a close-up, not counted)'], 'a close-up is said so');
   await ctx.close();
 }, { core: true });
 
@@ -914,7 +928,8 @@ test('run and review: each photo lands in the right folder, grid per folder, oth
   eq(r.reasons['IMG_20261029_100300.png'], 'screen-sized picture with no camera data', 'screenshot by shape');
   eq(r.reasons['PXL_20261029_100600000.jpg'], 'mostly text', 'text page found by the real text check');
   eq(r.reasons['PXL_20261029_101000000.jpg'], '3 people, 0.70 (closer look)', 'the classroom: people found by the closer look, not food from "restaurant"');
-  eq(r.reasons['PXL_20261029_100500000.jpg'], 'nothing clear (best guess: hook 0.12)', 'the hand close-up: a quarter-only face at 0.80 is not enough');
+  eq(r.reasons['PXL_20261029_100500000.jpg'], 'nothing clear (best guess: hook 0.12; best person 0.89; a person fills the frame: a close-up, not counted)',
+    'the hand close-up: a quarter-only face at 0.80, a frame-filling "person" and big pieces in the closer look are not people');
   eq(r.reasons['PXL_20250101_120000000.jpg'], 'cat 0.80 (seen)', 'a cat box');
   eq(r.overflow, false, 'no sideways scroll');
   assert(page.errors.length === 0, page.errors.join('; '));
@@ -934,7 +949,7 @@ test('review: tapping a photo and choosing a folder sends it there, marked in am
     targets: [...document.querySelectorAll('#sheet-targets button')].map((b) => b.textContent),
   }));
   eq([sheet.open, sheet.name, sheet.pressed], [true, 'PXL_20261029_100500000.jpg', ['other']], 'sheet');
-  eq(sheet.why, 'filter said other: nothing clear (best guess: hook 0.12)', 'why');
+  eq(sheet.why, 'filter said other: nothing clear (best guess: hook 0.12; best person 0.89; a person fills the frame: a close-up, not counted)', 'why');
   eq(sheet.targets, ['people', 'pets', 'food', 'screenshots', 'documents', 'scenery', 'other (stays)'], 'folders offered');
   await page.click('#sheet-targets button[data-category="food"]');
   const p = await plan(page);
@@ -1009,7 +1024,7 @@ test('run details can be copied from the review, before anything is copied', asy
   const lines = clip.split('\n');
   assert(/^filter v[\d.]+ run \d\d\/\d\d\/\d\d \d{4} hrs, 10 photos, /.test(lines[0]), 'header: ' + lines[0]);
   eq(lines.length, 11, 'a line per photo');
-  assert(lines.includes('PXL_20261029_100500000.jpg ▸ food (filter said other): nothing clear (best guess: hook 0.12)'), 'the change shows');
+  assert(lines.includes('PXL_20261029_100500000.jpg ▸ food (filter said other): nothing clear (best guess: hook 0.12; best person 0.89; a person fills the frame: a close-up, not counted)'), 'the change shows');
   eq(await text(page, '#review-details-text'), clip, 'the same text on the review screen');
   eq(await camTree(page), before, 'nothing written');
   await ctx.close();
