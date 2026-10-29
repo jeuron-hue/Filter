@@ -1,0 +1,17 @@
+{
+  "name": "filter",
+  "short_name": "filter",
+  "description": "Sorts photos and videos into folders, entirely on this phone.",
+  "id": "./filter.html",
+  "start_url": "./filter.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0B0B0B",
+  "theme_color": "#141312",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
