@@ -9,8 +9,9 @@
 //     and every sha256 recorded there matches the file
 //   - the vendored MediaPipe code holds no telemetry and no other site to call
 //   - the service worker caches everything and its version matches APP_VERSION
-//   - files are only written or deleted in the four places allowed to, and
-//     nothing is ever deleted with the recursive option
+//   - F1 copies only: nothing is deleted, and files are written only by the
+//     safe copy and the run log
+//   - the sorting rules' label names match the labels inside the model
 //   - every image in the repo carries no EXIF, XMP, IPTC, GPS or text chunks
 //
 // Run: node filter_checks.cjs
@@ -133,6 +134,21 @@ function imageFormat(buf) {
   return null;
 }
 
+
+// The labels inside a .tflite model: MediaPipe packs them as a small zip file
+// appended to the model. This reads its central directory and inflates the one file.
+function modelLabels(f) {
+  const zlib = require('zlib');
+  const b = fs.readFileSync(path.join(ROOT, f));
+  const eocd = b.lastIndexOf(Buffer.from([0x50, 0x4B, 0x05, 0x06]));
+  if (eocd < 0) return [];
+  const cd = b.readUInt32LE(eocd + 16);
+  if (b.readUInt32LE(cd) !== 0x02014B50) return [];
+  const method = b.readUInt16LE(cd + 10), csize = b.readUInt32LE(cd + 20), local = b.readUInt32LE(cd + 42);
+  const data = local + 30 + b.readUInt16LE(local + 26) + b.readUInt16LE(local + 28);
+  const raw = b.subarray(data, data + csize);
+  return (method === 8 ? zlib.inflateRawSync(raw) : raw).toString('utf8').split('\n').map((l) => l.trim()).filter(Boolean);
+}
 
 function walk(dir, out = []) {
   for (const e of fs.readdirSync(path.join(ROOT, dir || '.'), { withFileTypes: true })) {
@@ -267,30 +283,42 @@ function runChecks() {
     assert(guard > 0 && guard < sw.indexOf('fetch(req)'), 'sw.js must return early for other origins before any fetch');
   });
 
-  check('files are written and deleted only in the allowed places, never recursively', () => {
+  check('F1 copies only: nothing is deleted, files are written only by the safe copy and the run log', () => {
     const js = stripComments(scriptOf(read('filter.html')));
-    assert(!/recursive/.test(js), 'the word "recursive" appears in the script: nothing may delete a folder with its contents');
-    const safeMove = bodyOf(js, /core\.safeMove = async \(/);
-    const writeProbe = bodyOf(js, /async function writeProbeFile\(/);
-    const removeProbe = bodyOf(js, /async function removeProbeFile\(/);
-    const removeFolder = bodyOf(js, /async function removeProbeFolder\(/);
-    assert(safeMove && writeProbe && removeProbe && removeFolder, 'core.safeMove, writeProbeFile, removeProbeFile and removeProbeFolder must all exist');
-    const count = (s, re) => (s.match(re) || []).length;
-    const rm = /\.removeEntry\(/g, wr = /\.createWritable\(/g;
-    assert(count(js, rm) === count(safeMove, rm) + count(removeProbe, rm) + count(removeFolder, rm), 'removeEntry is called outside core.safeMove, removeProbeFile and removeProbeFolder');
-    assert(count(js, wr) === count(safeMove, wr) + count(writeProbe, wr), 'createWritable is called outside core.safeMove and writeProbeFile');
-    assert(count(safeMove, rm) === 1 && count(removeProbe, rm) === 1 && count(removeFolder, rm) === 1, 'each delete place should hold exactly one removeEntry');
-    // The probe's own writes and deletes check the name first.
-    for (const [n, b] of [['writeProbeFile', writeProbe], ['removeProbeFile', removeProbe]]) {
-      const guard = b.indexOf('if (!name.startsWith(PROBE_PREFIX)) throw');
-      assert(guard > 0 && guard < b.search(/createWritable|removeEntry/), n + ' must refuse names without PROBE_PREFIX before touching anything');
+    const noClass = js.replace(/classList\.remove\(/g, '');     // removing a CSS class is not a file operation
+    for (const banned of [/\.removeEntry\(/, /\.remove\(/, /recursive/, /\.move\(/, /keepExistingData/]) {
+      assert(!banned.test(noClass), 'the script uses ' + banned + ': F1 may not delete, move or append');
     }
-    assert(/removeEntry\(PROBE_FOLDER\)/.test(removeFolder), 'removeProbeFolder may only remove PROBE_FOLDER');
-    // In the safe move the delete comes after the read back and both comparisons.
-    const order = ['getFile()', 'createWritable(', "at('read back')", 'copy.size !== orig.size', 'log.copySha256 !== log.sha256', 'removeEntry('].map((s) => safeMove.indexOf(s));
-    assert(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1])), 'core.safeMove must read, copy, read back, compare size, compare SHA-256, and only then delete');
-    const prefix = (js.match(/const PROBE_PREFIX = '([^']+)'/) || [])[1];
-    assert(prefix === 'filter-probe-', 'PROBE_PREFIX should be filter-probe-, got ' + prefix);
+    const safeCopy = bodyOf(js, /core\.safeCopy = async \(/);
+    const writeLog = bodyOf(js, /async function writeLog\(/);
+    assert(safeCopy && writeLog, 'core.safeCopy and writeLog must both exist');
+    const count = (str, re) => (str.match(re) || []).length;
+    const wr = /\.createWritable\(/g;
+    assert(count(js, wr) === count(safeCopy, wr) + count(writeLog, wr) && count(safeCopy, wr) === 1 && count(writeLog, wr) === 1,
+      'createWritable may appear once in core.safeCopy and once in writeLog, nowhere else');
+    // The log never replaces a file: it looks for a free name first.
+    assert(writeLog.indexOf('core.exists(dir, name)') > 0 && writeLog.indexOf('core.exists(dir, name)') < writeLog.indexOf('createWritable'), 'writeLog must find a free name before writing');
+    // In the safe copy: read, refuse an existing name, write, read back, compare size, then SHA-256.
+    const order = ['src.getFile()', 'core.exists(toDir, name)', 'createWritable(', 'dst.getFile()', 'copy.size !== orig.size', 'log.copySha256 !== log.sha256', "at('done')"].map((x) => safeCopy.indexOf(x));
+    assert(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1])), 'core.safeCopy must read, check the target, copy, read back, compare size, compare SHA-256, in that order');
+  });
+
+  check('label groups match the labels inside the classifier model', () => {
+    const labels = modelLabels('vendor/mediapipe/efficientnet_lite0.tflite');
+    assert(labels.length === 1000, 'expected 1000 labels in the model, found ' + labels.length);
+    const src = read('filter.html');
+    const groups = src.match(/const LABEL_GROUPS = \{([\s\S]*?)\n\};/);
+    assert(groups, 'LABEL_GROUPS not found');
+    const ranges = Array.from(groups[1].matchAll(/\[(\d+), (\d+), '([^']+)', '([^']+)'\]/g));
+    assert(ranges.length > 10, 'too few label ranges found: ' + ranges.length);
+    const bad = [], seen = new Map();
+    for (const [, a, z, first, last] of ranges) {
+      if (labels[+a] !== first) bad.push(a + ' is "' + labels[+a] + '", not "' + first + '"');
+      if (labels[+z] !== last) bad.push(z + ' is "' + labels[+z] + '", not "' + last + '"');
+      for (let i = +a; i <= +z; i++) { if (seen.has(i)) bad.push(i + ' is in two groups'); seen.set(i, 1); }
+    }
+    assert(!bad.length, bad.join('; '));
+    return ranges.length + ' ranges, ' + seen.size + ' labels';
   });
 
   check('CORE block marked for the tests and the mutation runner', () => {
@@ -299,7 +327,9 @@ function runChecks() {
     assert(a > 0 && b > a, 'CORE markers missing or out of order');
     assert(html.split('// CORE:BEGIN').length === 2 && html.split('// CORE:END').length === 2, 'CORE markers must appear once each');
     const core = html.slice(a, b);
-    assert(/core\.safeMove = /.test(core) && /core\.readBatch = /.test(core), 'safeMove and readBatch must sit inside CORE');
+    for (const f of ['safeCopy', 'categorize', 'imageInfo', 'pickNewest', 'readBatch', 'facesFrom', 'textLike', 'mapAhead']) {
+      assert(new RegExp('core\\.' + f + ' = ').test(core), 'core.' + f + ' must sit inside CORE');
+    }
   });
 
   check('vendored files have pinned versions in the build notes', () => {
