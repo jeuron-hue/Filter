@@ -11,14 +11,15 @@ filter sorts the photos and videos on Gary's Pixel 9 Pro XL into folders by what
 
 ## Hard rule: never lose a file
 Gary keeps no backup (no Google Photos backup). On Android a web app cannot rename or move a file; a move is a copy and then a delete. So:
-- Default is copy. The original is untouched.
-- Move is copy, then read the copy back and check it is byte-identical to the original (size and SHA-256), and only then delete the original. Any mismatch stops the run and keeps both.
+- A move is always: copy, read the copy back and check it is byte-identical to the original (size and SHA-256), and only then delete the original. Any mismatch stops the run and keeps both.
+- Review mode: Gary chooses copy or move when he confirms; copy is the default and leaves the original untouched.
+- Auto mode: every file sorted is moved, the safe way above (Gary's rule, 29/10/26), so nothing is lost and nothing is left doubled up.
 - Every run writes a log (what went where, with hashes) so the last run can be undone the same safe way.
 - These rules hold in both run modes (below). In Auto mode, a picture filter is unsure about stays where it is.
 
 ## Run modes (Gary picks per run)
 - Review: filter shows its plan first, a grid per proposed folder; tap a picture to send it elsewhere. Nothing is copied, moved or deleted until Gary confirms.
-- Auto: filter sorts straight away and shows what it did afterwards, with undo for the run.
+- Auto: filter sorts straight away, moving each file by verified copy then delete, and shows what it did afterwards, with undo for the run.
 
 ## Recognition modes (Gary picks per run)
 - By description: folders named by what is in them. A fixed list filter knows (people, pets, food, screenshots, documents, scenery, other), plus a few of Gary's own, typed and edited by him (say "receipts" or "hawker food"). See Recognition under Architecture.
