@@ -310,6 +310,10 @@ function runChecks() {
     const groups = src.match(/const LABEL_GROUPS = \{([\s\S]*?)\n\};/);
     assert(groups, 'LABEL_GROUPS not found');
     const ranges = Array.from(groups[1].matchAll(/\[(\d+), (\d+), '([^']+)', '([^']+)'\]/g));
+    // The worn-clothes labels are checked the same way, and must not overlap the folder groups.
+    const clothes = src.match(/const CLOTHES = \[([\s\S]*?)\]\];/);
+    assert(clothes, 'CLOTHES not found');
+    ranges.push(...Array.from((clothes[1] + ']').matchAll(/\[(\d+), (\d+), '([^']+)', '([^']+)'\]/g)));
     assert(ranges.length > 10, 'too few label ranges found: ' + ranges.length);
     const bad = [], seen = new Map();
     for (const [, a, z, first, last] of ranges) {
