@@ -181,13 +181,17 @@ function pageFixtures() {
       // On the small preview one person is barely seen; the closer look finds three.
       await photo('PXL_20261029_101000000.jpg', 0, { labels: [{ index: 762, name: 'restaurant', score: 0.5 }],
         objects: [{ name: 'person', score: 0.45, w: 0.1, h: 0.2 }],
-        closer: { objects: [0.1, 0.4, 0.7].map((x) => ({ name: 'person', score: 0.7, w: 0.15, h: 0.3, x })) } });
+        // the closer look finds three, one of them twice (in two overlapping parts)
+        closer: { objects: [0.1, 0.4, 0.7].map((x) => ({ name: 'person', score: 0.7, w: 0.15, h: 0.3, x, y: 0.5 }))
+          .concat([{ name: 'person', score: 0.65, x: 0.11, y: 0.51, w: 0.14, h: 0.28 }]) } });
       await photo('PXL_20261029_100900000.jpg', 1, { labels: [{ index: 207, name: 'golden retriever', score: 0.4 }, { index: 208, name: 'Labrador retriever', score: 0.2 }] });
       await photo('PXL_20261029_100800000.jpg', 2, { labels: [{ index: 963, name: 'pizza', score: 0.7 }] });
       await photo('PXL_20261029_100700000.jpg', 3, { labels: [{ index: 978, name: 'seashore', score: 0.3 }, { index: 975, name: 'lakeside', score: 0.1 }] });
       await photo('PXL_20261029_100600000.jpg', 4, {}, { blob: await this.textPage() });
       // Like Gary's hand close-up (30/10/26): a false face, seen only in a quarter of the photo.
-      await photo('PXL_20261029_100500000.jpg', 5, { labels: [{ index: 600, name: 'hook', score: 0.12 }], faces: [{ w: 0.3, h: 0.35, score: 0.8, tile: true }] });
+      // Its closer look "sees" a pizza: the closer look decides people only (third run, 30/10/26).
+      await photo('PXL_20261029_100500000.jpg', 5, { labels: [{ index: 600, name: 'hook', score: 0.12 }], faces: [{ w: 0.3, h: 0.35, score: 0.8, tile: true }],
+        closer: { objects: [{ name: 'pizza', score: 0.8, x: 0.2, y: 0.2, w: 0.4, h: 0.4 }] } });
       await this.put(cam, 'Screenshot_20261029-100400.png', await this.picture(6, { w: 540, h: 1200, type: 'image/png' }));
       await this.put(cam, 'IMG_20261029_100300.png', await this.picture(7, { w: 1344, h: 2992, type: 'image/png' }));
       await photo('PXL_20261029_100200000.jpg', 6, { faces: [{ w: 0.2, h: 0.2, score: 0.9 }, { w: 0.15, h: 0.18, score: 0.8 }] });
@@ -529,34 +533,6 @@ test('imageInfo reads size, camera, orientation and the preview from a JPEG, bot
   await ctx.close();
 }, { core: true });
 
-test('orientMatrix turns each EXIF orientation upright; orientedSize swaps for quarter turns', async () => {
-  const { ctx, page } = await newApp();
-  const r = await page.evaluate(() => {
-    const c = window.filter.core, w = 40, h = 30, out = {};
-    for (let o = 1; o <= 8; o++) {
-      const [a, b, cc, d, e, f] = c.orientMatrix(o, w, h);
-      const map = ([x, y]) => [a * x + cc * y + e, b * x + d * y + f];
-      const pts = [[0, 0], [w, 0], [0, h], [w, h]].map(map);
-      const s = c.orientedSize(w, h, o);
-      out[o] = { origin: map([0, 0]), along: map([w, 0]), fits: pts.every(([x, y]) => x >= 0 && y >= 0 && x <= s.w && y <= s.h), size: [s.w, s.h] };
-    }
-    out.bad = c.orientMatrix(9, w, h);
-    return out;
-  });
-  // Where the source's top-left corner and top-right corner land, per the EXIF definitions.
-  const want = { 1: [[0, 0], [40, 0]], 2: [[40, 0], [0, 0]], 3: [[40, 30], [0, 30]], 4: [[0, 30], [40, 30]],
-    5: [[0, 0], [0, 40]], 6: [[30, 0], [30, 40]], 7: [[30, 40], [30, 0]], 8: [[0, 40], [0, 0]] };
-  for (let o = 1; o <= 8; o++) {
-    eq([r[o].origin, r[o].along], want[o], 'orientation ' + o + ': where the top row lands');
-    assert(r[o].fits, 'orientation ' + o + ': the picture fits the canvas');
-    eq(r[o].size, o >= 5 ? [30, 40] : [40, 30], 'orientation ' + o + ' size');
-  }
-  eq(r.bad, [1, 0, 0, 1, 0, 0], 'unknown orientation left as it is');
-  await ctx.close();
-}, { core: true });
-
-/* ---------- Core: the sorting rules ---------- */
-
 test('tiles and facesFrom: five looks, a quarter needs more confidence, never counted twice', async () => {
   const { ctx, page } = await newApp();
   const r = await page.evaluate(() => {
@@ -586,39 +562,55 @@ test('objectsFrom: boxes per folder, confident and big enough, biggest and best 
   const { ctx, page } = await newApp();
   const r = await page.evaluate(() => {
     const c = window.filter.core;
-    const d = (name, score, w, h) => ({ name, score, w, h });
-    return c.objectsFrom([d('person', 0.9, 100, 200), d('person', 0.5, 50, 80), d('person', 0.49, 300, 300), d('person', 0.95, 20, 19),
-      d('dog', 0.7, 150, 150), d('cat', 0.8, 60, 60), d('pizza', 0.65, 100, 100), d('laptop', 0.99, 300, 200), d('bowl', 0.9, 200, 200)], 500, 400);
+    const d = (name, score, w, h) => ({ name, score, x: 0, y: 0, w, h });
+    return c.objectsFrom([d('person', 0.9, 0.2, 0.5), d('person', 0.5, 0.1, 0.2), d('person', 0.49, 0.6, 0.75), d('person', 0.95, 0.1, 0.0995),
+      d('dog', 0.7, 0.25, 0.5), d('cat', 0.8, 0.12, 0.15), d('pizza', 0.65, 0.2, 0.25), d('laptop', 0.99, 0.6, 0.5), d('bowl', 0.9, 0.4, 0.5)]);
   });
   eq(r.people, { count: 2, area: 0.1, score: 0.9, name: 'person', best: 0.95 }, 'people: two count (one unsure, one too small); best of any box 0.95');
-  eq(r.pets, { count: 2, area: 0.1125, score: 0.8, name: 'cat', best: 0.8 }, 'pets: best is the cat, biggest the dog');
+  eq(r.pets, { count: 2, area: 0.125, score: 0.8, name: 'cat', best: 0.8 }, 'pets: best is the cat, biggest the dog');
   eq(r.food, { count: 1, area: 0.05, score: 0.65, name: 'pizza', best: 0.65 }, 'food: a bowl is not food');
   await ctx.close();
 }, { core: true });
 
-test('grid and mergeLooks: nine overlapping parts edge to edge; looks merged without counting twice', async () => {
+test('grid, normBoxes and dedupe: parts edge to edge, boxes back on the whole photo, one thing counted once', async () => {
   const { ctx, page } = await newApp();
   const r = await page.evaluate(() => {
     const c = window.filter.core;
-    const o = (count, area, score, name, best) => ({ people: { count, area, score, name, best } });
+    const b = (name, score, x, y, w, h) => ({ name, score, x, y, w, h });
+    const kept = (boxes) => c.dedupe(boxes).map((k) => k.name + ' ' + k.score);
     return {
       g: c.grid(1000, 800, 3, 0.45), one: c.grid(100, 80, 1, 1),
-      m: c.mergeLooks([o(1, 0.05, 0.9, 'person', 0.9), o(3, 0.02, 0.6, 'person', 0.95), o(0, 0, 0, null, 0.4)]),
-      pets: c.mergeLooks([{ pets: { count: 0, area: 0, score: 0, name: null, best: 0.3 } }, { pets: { count: 1, area: 0.2, score: 0.7, name: 'dog', best: 0.7 } }]).pets,
+      norm: c.normBoxes([{ name: 'person', score: 0.8, x: 50, y: 40, w: 100, h: 200 }], 1000, 800, 550, 440),
+      // a person seen in two overlapping parts, a person cut by a part's edge, two people side by side
+      twice: kept([b('person', 0.7, 0.10, 0.10, 0.20, 0.40), b('person', 0.8, 0.12, 0.11, 0.20, 0.40)]),
+      cut: kept([b('person', 0.9, 0.10, 0.10, 0.20, 0.40), b('person', 0.6, 0.10, 0.10, 0.08, 0.40)]),
+      side: kept([b('person', 0.7, 0.10, 0.10, 0.20, 0.40), b('person', 0.8, 0.31, 0.10, 0.20, 0.40)]),
+      touching: kept([b('person', 0.7, 0.10, 0.10, 0.20, 0.40), b('person', 0.8, 0.30, 0.10, 0.20, 0.40)]),
+      // two 0.5 x 0.5 boxes 0.2 apart overlap by 0.43 (intersection over union): one; 0.23 apart, 0.37: two
+      overlapSame: kept([b('person', 0.9, 0, 0, 0.5, 0.5), b('person', 0.8, 0.2, 0, 0.5, 0.5)]),
+      overlapApart: kept([b('person', 0.9, 0, 0, 0.5, 0.5), b('person', 0.8, 0.23, 0, 0.5, 0.5)]),
+      stacked: kept([b('person', 0.7, 0.10, 0.05, 0.20, 0.40), b('person', 0.8, 0.10, 0.50, 0.20, 0.40)]),
+      labels: kept([b('person', 0.7, 0.10, 0.10, 0.20, 0.40), b('dog', 0.8, 0.10, 0.10, 0.20, 0.40)]),
+      order: kept([b('person', 0.5, 0, 0, 0.2, 0.2), b('person', 0.9, 0.01, 0, 0.2, 0.2), b('person', 0.7, 0.02, 0, 0.2, 0.2)]),
     };
   });
   eq(r.g.length, 9, 'nine parts');
   eq(r.g[0], { x: 0, y: 0, w: 450, h: 360 }, 'first part at the top left');
   eq(r.g[4], { x: 275, y: 220, w: 450, h: 360 }, 'middle part centred');
   eq(r.g[8], { x: 550, y: 440, w: 450, h: 360 }, 'last part reaches the bottom right edge');
-  eq(r.g.map((t) => t.x).slice(0, 3), [0, 275, 550], 'columns evenly spread');
   eq(r.one, [{ x: 0, y: 0, w: 100, h: 80 }], 'a 1 x 1 grid is the whole photo');
-  eq(r.m.people, { count: 3, area: 0.05, score: 0.9, name: 'person', best: 0.95 }, 'merged: most in one look, biggest, best');
-  eq(r.pets, { count: 1, area: 0.2, score: 0.7, name: 'dog', best: 0.7 }, 'merged pets');
+  eq(r.norm, [{ name: 'person', score: 0.8, x: 0.6, y: 0.6, w: 0.1, h: 0.25 }], 'a box in a part, as shares of the whole photo');
+  eq(r.twice, ['person 0.8'], 'seen twice, counted once, the surer box kept');
+  eq(r.cut, ['person 0.9'], 'a box mostly inside another is the same person');
+  eq(r.side, ['person 0.8', 'person 0.7'], 'two people side by side stay two');
+  eq(r.touching, ['person 0.8', 'person 0.7'], 'boxes that only touch stay two');
+  eq(r.labels, ['dog 0.8', 'person 0.7'], 'a dog and a person in one place stay apart');
+  eq(r.overlapSame, ['person 0.9'], 'overlap over the sameBox bar: one');
+  eq(r.overlapApart, ['person 0.9', 'person 0.8'], 'overlap under the bar: two');
+  eq(r.stacked, ['person 0.8', 'person 0.7'], 'one above the other, same column: two');
+  eq(r.order, ['person 0.9'], 'surest first');
   await ctx.close();
 }, { core: true });
-
-
 
 test('textLike: a page of text yes; plain, colourful, noisy and chequered pictures no', async () => {
   const { ctx, page } = await newApp();
@@ -1020,29 +1012,25 @@ test('a second run skips what is already copied and takes the next newest', asyn
   await ctx.close();
 });
 
-test('the preview inside a JPEG is used when big enough, and turned upright', async () => {
+test('photos are decoded upright from their camera data', async () => {
   const { ctx, page } = await newApp();
   await page.evaluate(async () => {
     const fx = window.__fx, cam = await fx.dir('DCIM/Camera');
     window.__answers = {};
     const blue = await fx.picture(0, { w: 1600, h: 1200, flat: '#1030c0' });
-    await fx.put(cam, 'PXL_20261029_120000000.jpg', await fx.withExif(blue, { orientation: 6, thumb: await fx.picture(0, { w: 320, h: 240, flat: '#e01010' }) }));
-    await fx.put(cam, 'PXL_20261029_110000000.jpg', await fx.withExif(blue, { orientation: 1, thumb: await fx.picture(0, { w: 160, h: 120, flat: '#e01010' }) }));
+    await fx.put(cam, 'PXL_20261029_120000000.jpg', await fx.withExif(blue, { orientation: 6 }));
+    await fx.put(cam, 'PXL_20261029_110000000.jpg', await fx.withExif(blue, { orientation: 1 }));
     window.__pick = cam;
   });
   await run(page, '#btn-pick');
   await sort(page);
   const r = await page.evaluate(async () => {
     const out = {};
-    for (const p of window.filter.state.plan) {
-      const l = await window.__fx.look(p.thumb);
-      out[p.name] = { w: l.w, h: l.h, red: l.centre[0] > 150 && l.centre[2] < 100, preview: p.preview };
-    }
-    return { out, used: window.filter.state.lastRun.previewUsed };
+    for (const p of window.filter.state.plan) { const l = await window.__fx.look(p.thumb); out[p.name] = [l.w, l.h, l.centre[2] > 150]; }
+    return out;
   });
-  eq(r.out['PXL_20261029_120000000.jpg'], { w: 150, h: 200, red: true, preview: true }, 'big preview used, turned upright (portrait)');
-  eq(r.out['PXL_20261029_110000000.jpg'], { w: 200, h: 150, red: false, preview: false }, 'small preview skipped: the photo itself decoded');
-  eq(r.used, 1, 'preview count');
+  eq(r['PXL_20261029_120000000.jpg'], [150, 200, true], 'turned upright: portrait');
+  eq(r['PXL_20261029_110000000.jpg'], [200, 150, true], 'left as it is');
   await ctx.close();
 });
 
