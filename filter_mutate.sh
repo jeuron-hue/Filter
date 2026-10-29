@@ -60,10 +60,6 @@ exif: short strings read from an offset ||| at = n <= 4 ? e + 8 : t + u32(e + 8)
 exif: preview offset not from the TIFF start ||| if (u16(e) === 0x0201) start = t + u32(e + 8); ||| if (u16(e) === 0x0201) start = u32(e + 8);
 exif: next IFD from the wrong place ||| const next = ifd0 + 2 + n0 * 12; ||| const next = ifd0 + n0 * 12;
 exif: preview past the end accepted ||| if (start !== null && length > 0 && inside(start, length)) ||| if (start !== null && length > 0)
-orient: quarter turn keeps the size ||| (o >= 5 ? { w: h, h: w } : { w, h }) ||| ({ w, h })
-orient: 6 turns the wrong way ||| 6: [0, 1, -1, 0, h, 0] ||| 6: [0, -1, 1, 0, 0, w]
-orient: 3 not flipped vertically ||| 3: [-1, 0, 0, -1, w, h] ||| 3: [-1, 0, 0, 1, w, 0]
-orient: 8 mirrored ||| 8: [0, -1, 1, 0, 0, w] ||| 8: [0, 1, 1, 0, 0, 0]
 tiles: corners too small ||| core.tiles = (w, h, k = 0.6) => { ||| core.tiles = (w, h, k = 0.5) => {
 tiles: right corner at the left ||| { x: w - tw, y: 0, w: tw, h: th } ||| { x: 0, y: 0, w: tw, h: th }
 faces: confidence ignored ||| if (d.score < min || size < rules.faceSize) continue; ||| if (size < rules.faceSize) continue;
@@ -73,7 +69,6 @@ faces: a quarter as easy as the whole ||| const min = run.full ? rules.faceScore
 faces: the whole as hard as a quarter ||| const min = run.full ? rules.faceScore : rules.faceScoreTile; ||| const min = rules.faceScoreTile;
 objects: confidence ignored ||| if (d.score < rules.objectScore || area < rules.objectArea) continue; ||| if (area < rules.objectArea) continue;
 objects: size ignored ||| if (d.score < rules.objectScore || area < rules.objectArea) continue; ||| if (d.score < rules.objectScore) continue;
-objects: area from the width alone ||| const area = (d.w * d.h) / (W * H); ||| const area = d.w / W;
 objects: biggest not kept ||| o.area = Math.max(o.area, area); ||| o.area = area;
 objects: best not kept ||| if (d.score > o.score) { o.score = d.score; o.name = d.name; } ||| { o.score = d.score; o.name = d.name; }
 objects: every label in every group ||| if (!groups[g].includes(d.name)) continue; ||| /* removed */
@@ -101,12 +96,17 @@ rules: food before pets ||| for (const g of ['pets', 'food']) { ||| for (const g
 grid: parts not spread to the edge ||| x: n > 1 ? Math.round(i * (w - tw) / (n - 1)) : 0 ||| x: n > 1 ? Math.round(i * w / n) : 0
 grid: rows spread by the width ||| y: n > 1 ? Math.round(j * (h - th) / (n - 1)) : 0 ||| y: n > 1 ? Math.round(j * (w - tw) / (n - 1)) : 0
 grid: part size ignores k ||| const tw = Math.round(w * k), th = Math.round(h * k), out = []; ||| const tw = Math.round(w / n), th = Math.round(h / n), out = [];
-merge: counts added across looks ||| o.count = Math.max(o.count, a.count); ||| o.count += a.count;
-merge: biggest not kept ||| o.area = Math.max(o.area, a.area); ||| o.area = a.area;
-merge: best label not kept ||| if (a.score > o.score) { o.score = a.score; o.name = a.name; } ||| { o.score = a.score; o.name = a.name; }
-merge: best of any box lost ||| o.best = Math.max(o.best, a.best || 0); ||| o.best = a.best || 0;
 objects: best of any box not tracked ||| if (groups[g].includes(d.name)) out[g].best = Math.max(out[g].best, d.score); ||| if (groups[g].includes(d.name)) out[g].best = 0;
 rules: best person left out of other ||| const person = ob.people && ob.people.best ? '; best person ' + ob.people.best.toFixed(2) : ''; ||| const person = '';
+objects: area from the width alone ||| const area = d.w * d.h; ||| const area = d.w;
+norm: part corner ignored ||| x: (d.x + ox) / W, y: (d.y + oy) / H, ||| x: d.x / W, y: d.y / H,
+norm: height measured by the width ||| w: d.w / W, h: d.h / H })); ||| w: d.w / W, h: d.h / W }));
+dedupe: nothing merged ||| if (!same) kept.push(b); ||| kept.push(b);
+dedupe: different labels merged ||| if (k.name !== b.name) return false; ||| if (false) return false;
+dedupe: least sure kept ||| boxes.slice().sort((p, q) => q.score - p.score) ||| boxes.slice().sort((p, q) => p.score - q.score)
+dedupe: overlap measure off ||| inter / (ka + ba - inter) >= rules.sameBox ||| inter / (ka + ba) >= rules.sameBox
+dedupe: cut boxes kept apart ||| || inter / Math.min(ka, ba) >= rules.sameInside; ||| ;
+dedupe: rows ignored ||| const ih = Math.min(k.y + k.h, b.y + b.h) - Math.max(k.y, b.y); ||| const ih = 1;
 rules: text ignored ||| if (p.text) return { category: 'documents' ||| if (false) return { category: 'documents'
 rules: all labels counted ||| const top = (p.labels || []).slice(0, rules.topLabels); ||| const top = (p.labels || []);
 rules: first group wins ||| if (mine.length && (!best || sum > best.sum)) ||| if (mine.length && !best)
