@@ -12,7 +12,7 @@ scenery); photos in "other" stay where they are and are not copied. Every copy
 is read back and checked byte for byte (size and SHA-256). F1 never deletes or
 overwrites anything. Each run writes a log to filter-logs/ in the picked folder.
 
-APP_VERSION 0.1.3 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.1.4 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -50,7 +50,11 @@ change the version here in the same commit as the file.
   the third run (30/10/26) taking the most found in any one part left a room of
   students counted as one, and small parts made pizza and cats out of packets.
   Every photo is decoded once at 1280 px, ahead of time while the models work
-  on the one before; the first look uses a 512 px copy of it.
+  on the one before; the first look uses a 512 px copy of it. A "person" filling
+  the frame with no face is a close-up of part of a body, not a person, and the
+  closer look adds only small people (fourth run, 30/10/26: a chest, a hand with
+  a bottle, close-ups of a body and a pile of noodles were all "a person", the
+  hand "4 people" from pieces seen in four parts).
 
 How the file is laid out:
   1. Content-Security-Policy: the browser itself refuses any network call to
@@ -310,7 +314,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.1.3';
+const APP_VERSION = '0.1.4';
 
 // The folders filter knows, in the order they are shown. Photos in "other"
 // stay where they are: nothing is copied for them.
@@ -348,6 +352,8 @@ const RULES = {
   thingArea: 0.03,      // ... and this share of the photo
   sameBox: 0.4,         // two boxes of one label overlapping this much (intersection over union) are one thing
   sameInside: 0.7,      // ... as is a box lying this much inside another (a person cut by a part's edge)
+  fillFrame: 0.9,       // a person box this share of both the width and the height is a close-up of part of a body
+  closeMaxArea: 0.12,   // the closer look adds person boxes up to this share of the photo: people far away
   topLabels: 10,        // the classifier's best labels that are added up per folder
   labelMin: 0.25,       // a folder's added-up score must reach this to win
   screenRatio: [0.40, 0.50],   // short side / long side of a phone screen (Pixel 9 Pro XL: 0.45)
@@ -655,10 +661,11 @@ core.dedupe = (boxes, rules = RULES) => {
 // Boxes (shares of the photo, after dedupe), per folder: how many count (confident
 // and big enough), the biggest share of the photo one covers, the best confidence
 // and its label, and the best confidence of any box at all (best), even one that
-// does not count, for the run details.
+// does not count, for the run details. A person box that fills the frame is a
+// close-up of part of a body: it is counted as filled, not as a person.
 core.objectsFrom = (boxes, rules = RULES, groups = OBJECT_GROUPS) => {
   const out = {};
-  for (const g of Object.keys(groups)) out[g] = { count: 0, area: 0, score: 0, name: null, best: 0 };
+  for (const g of Object.keys(groups)) out[g] = { count: 0, area: 0, score: 0, name: null, best: 0, filled: 0 };
   for (const d of boxes) {
     for (const g of Object.keys(groups)) if (groups[g].includes(d.name)) out[g].best = Math.max(out[g].best, d.score);
     const area = d.w * d.h;
@@ -666,6 +673,7 @@ core.objectsFrom = (boxes, rules = RULES, groups = OBJECT_GROUPS) => {
     for (const g of Object.keys(groups)) {
       if (!groups[g].includes(d.name)) continue;
       const o = out[g];
+      if (g === 'people' && d.w >= rules.fillFrame && d.h >= rules.fillFrame) { o.filled++; continue; }
       o.count++;
       o.area = Math.max(o.area, area);
       if (d.score > o.score) { o.score = d.score; o.name = d.name; }
@@ -673,6 +681,12 @@ core.objectsFrom = (boxes, rules = RULES, groups = OBJECT_GROUPS) => {
   }
   return out;
 };
+
+// What the closer look may add: person boxes small enough to be people far away.
+// A big "person" in one part is a piece of something close up (a hand became
+// "4 people" from pieces seen in four parts, 30/10/26).
+core.closerPeople = (boxes, rules = RULES, groups = OBJECT_GROUPS) =>
+  boxes.filter((b) => groups.people.includes(b.name) && b.w * b.h <= rules.closeMaxArea);
 
 core.inGroup = (index, ranges) => ranges.some(([a, z]) => index >= a && index <= z);
 
@@ -712,9 +726,11 @@ core.categorize = (p, rules = RULES, groups = LABEL_GROUPS) => {
   if (best && best.sum >= rules.labelMin) {
     return { category: best.g, reason: best.label.name + ' ' + best.label.score.toFixed(2) + ', ' + best.g + ' ' + best.sum.toFixed(2) };
   }
-  const t = top[0];
-  const person = ob.people && ob.people.best ? '; best person ' + ob.people.best.toFixed(2) : '';
-  return { category: 'other', reason: 'nothing clear' + (t ? ' (best guess: ' + t.name + ' ' + t.score.toFixed(2) + person + ')' : person ? ' (' + person.slice(2) + ')' : '') };
+  const t = top[0], notes = [];
+  if (t) notes.push('best guess: ' + t.name + ' ' + t.score.toFixed(2));
+  if (ob.people && ob.people.best) notes.push('best person ' + ob.people.best.toFixed(2));
+  if (ob.people && ob.people.filled) notes.push('a person fills the frame: a close-up, not counted');
+  return { category: 'other', reason: 'nothing clear' + (notes.length ? ' (' + notes.join('; ') + ')' : '') };
 };
 
 // Run load(item) up to `depth` items ahead of each(result, i), which sees the
@@ -1169,9 +1185,9 @@ async function runSort() {
           width: p.size.w, height: p.size.h, faces: r.faces, objects, labels: r.labels, text: text.isText };
         let c = core.categorize(facts);
         if (c.category !== 'people' && c.category !== 'screenshots') {
-          // A closer look, for people only: the person boxes it finds join the first
-          // look's, overlapping ones are merged, and the same rules decide again.
-          const near = (await recog.closer(p.big, p.entry)).filter((b) => OBJECT_GROUPS.people.includes(b.name));
+          // A closer look, for people far away only: the small person boxes it finds
+          // join the first look's, overlapping ones are merged, and the same rules decide again.
+          const near = core.closerPeople(await recog.closer(p.big, p.entry));
           stats.closer++;
           const people = core.objectsFrom(core.dedupe(r.boxes.concat(near))).people;
           const c2 = core.categorize({ ...facts, objects: { ...objects, people } });

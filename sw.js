@@ -12,7 +12,7 @@
 // in filter.html (filter_checks.cjs fails if they differ). A new version makes
 // the browser install a fresh worker, and the app shows "Update available".
 
-const CACHE_VERSION = '0.1.3';
+const CACHE_VERSION = '0.1.4';
 const CACHE = 'filter-v' + CACHE_VERSION;
 // Must name the @mediapipe/tasks-vision version in the filter.html build notes
 // (filter_checks.cjs enforces it). Change the suffix whenever a file below changes.

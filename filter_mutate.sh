@@ -97,7 +97,7 @@ grid: parts not spread to the edge ||| x: n > 1 ? Math.round(i * (w - tw) / (n -
 grid: rows spread by the width ||| y: n > 1 ? Math.round(j * (h - th) / (n - 1)) : 0 ||| y: n > 1 ? Math.round(j * (w - tw) / (n - 1)) : 0
 grid: part size ignores k ||| const tw = Math.round(w * k), th = Math.round(h * k), out = []; ||| const tw = Math.round(w / n), th = Math.round(h / n), out = [];
 objects: best of any box not tracked ||| if (groups[g].includes(d.name)) out[g].best = Math.max(out[g].best, d.score); ||| if (groups[g].includes(d.name)) out[g].best = 0;
-rules: best person left out of other ||| const person = ob.people && ob.people.best ? '; best person ' + ob.people.best.toFixed(2) : ''; ||| const person = '';
+rules: best person left out of other ||| if (ob.people && ob.people.best) notes.push ||| if (false) notes.push
 objects: area from the width alone ||| const area = d.w * d.h; ||| const area = d.w;
 norm: part corner ignored ||| x: (d.x + ox) / W, y: (d.y + oy) / H, ||| x: d.x / W, y: d.y / H,
 norm: height measured by the width ||| w: d.w / W, h: d.h / H })); ||| w: d.w / W, h: d.h / W }));
@@ -107,6 +107,13 @@ dedupe: least sure kept ||| boxes.slice().sort((p, q) => q.score - p.score) ||| 
 dedupe: overlap measure off ||| inter / (ka + ba - inter) >= rules.sameBox ||| inter / (ka + ba) >= rules.sameBox
 dedupe: cut boxes kept apart ||| || inter / Math.min(ka, ba) >= rules.sameInside; ||| ;
 dedupe: rows ignored ||| const ih = Math.min(k.y + k.h, b.y + b.h) - Math.max(k.y, b.y); ||| const ih = 1;
+objects: frame-filling people counted ||| if (g === 'people' && d.w >= rules.fillFrame && d.h >= rules.fillFrame) { o.filled++; continue; } ||| if (false) { o.filled++; continue; }
+objects: filling either way is enough ||| d.w >= rules.fillFrame && d.h >= rules.fillFrame ||| (d.w >= rules.fillFrame || d.h >= rules.fillFrame)
+objects: frame filling applies to cats too ||| if (g === 'people' && d.w ||| if (d.w
+closer: big people added ||| groups.people.includes(b.name) && b.w * b.h <= rules.closeMaxArea ||| groups.people.includes(b.name)
+closer: everything added ||| boxes.filter((b) => groups.people.includes(b.name) && ||| boxes.filter((b) =>
+closer: size edge excluded ||| b.w * b.h <= rules.closeMaxArea ||| b.w * b.h < rules.closeMaxArea
+rules: close-up not said ||| if (ob.people && ob.people.filled) notes.push ||| if (false) notes.push
 rules: text ignored ||| if (p.text) return { category: 'documents' ||| if (false) return { category: 'documents'
 rules: all labels counted ||| const top = (p.labels || []).slice(0, rules.topLabels); ||| const top = (p.labels || []);
 rules: first group wins ||| if (mine.length && (!best || sum > best.sum)) ||| if (mine.length && !best)
