@@ -33,7 +33,7 @@ Gary keeps no backup (no Google Photos backup). On Android a web app cannot rena
   - By description, typed: needs a model that reads both words and pictures into the same numbers (a CLIP-style model), so a typed folder name can be compared with a picture. MediaPipe has none, so this is a second runtime (about 100 MB more to download) and slower on the phone. Which model, under which licence and at what size, is settled and written here before F5 starts; its licence must allow this use.
   - By example: an image embedder (a model that turns a picture into a list of numbers, where similar pictures get similar numbers). Each folder's 3 example pictures and 3 example videos become its reference points.
   - Videos: three frames sampled (10 %, 50 %, 90 % through). By description, each frame is recognised and the majority wins; by example, the three frames' numbers are averaged and compared with the example videos'.
-- Models download from Google's model store, which Claude's network and the rig shell cannot reach: Gary downloads each one and Claude vendors it with its sha256 in the build notes.
+- Models come from Google's model store. Claude's cloud session reached it on 29/10/26 and fetched EfficientNet-Lite0 directly; the rig shell cannot reach it, so there Gary downloads each model and Claude vendors it. Either way each model is vendored with its sha256, version and licence in the filter.html build notes.
 
 ## Design
 filter uses retouch's darkroom style (Gary's choice, 29/10/26), not Lab Book, so the two apps look like a pair. The spec is retouch's CLAUDE.md Design section; the parts that apply:
@@ -47,7 +47,7 @@ filter uses retouch's darkroom style (Gary's choice, 29/10/26), not Lab Book, so
 
 ## Phases
 Each phase on its own branch, all suites green, Gary merges, tests on the Pixel and confirms before the next.
-- F0: probe on the Pixel. Pick DCIM/Camera; read a batch of 500; create a subfolder; copy, verify and delete a test file; reopen the folder after closing the app (does Chrome keep the permission?); time recognition per photo. The answers are written here before F1 starts.
+- F0: probe on the Pixel. Pick DCIM/Camera; read a batch of 500; create a subfolder; copy, verify and delete a test file; reopen the folder after closing the app (does Chrome keep the permission?); time recognition per photo. The answers are written here before F1 starts. Probe built 29/10/26 (filter.html v0.0.1, branch f0-probe; EfficientNet-Lite0 float32 classifier, Apache-2.0); answers pending Gary's run on the Pixel.
 - F1: photos, by description, Review mode, copy only.
 - F2: by example (3 pictures per folder).
 - F3: videos, both recognition modes (3 example videos per folder).
@@ -57,7 +57,7 @@ Each phase on its own branch, all suites green, Gary merges, tests on the Pixel 
 ## Testing
 - filter_checks.cjs (static): CSP, no external origins, allowed files only, vendored versions and hashes recorded.
 - filter_behave.cjs (Chromium via Playwright): synthetic fixtures built in the test (coloured shapes, text images, screen-sized PNGs, short generated clips), a fake folder tree in place of the real picker, numeric checks on where each file lands, and on copy, verify, delete and undo, including a forced mismatch that must stop the run with both files kept.
-- A mutation runner over the core sorting and file-safety functions.
+- filter_mutate.sh: a mutation runner over the core sorting and file-safety functions (the CORE block in filter.html).
 - Everything green before any commit.
 
 ## Working with Gary
