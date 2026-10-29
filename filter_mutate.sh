@@ -107,13 +107,18 @@ dedupe: least sure kept ||| boxes.slice().sort((p, q) => q.score - p.score) ||| 
 dedupe: overlap measure off ||| inter / (ka + ba - inter) >= rules.sameBox ||| inter / (ka + ba) >= rules.sameBox
 dedupe: cut boxes kept apart ||| || inter / Math.min(ka, ba) >= rules.sameInside; ||| ;
 dedupe: rows ignored ||| const ih = Math.min(k.y + k.h, b.y + b.h) - Math.max(k.y, b.y); ||| const ih = 1;
-objects: frame-filling people counted ||| if (g === 'people' && d.w >= rules.fillFrame && d.h >= rules.fillFrame) { o.filled++; continue; } ||| if (false) { o.filled++; continue; }
+objects: frame-filling people counted ||| if (g === 'people' && d.w >= rules.fillFrame && d.h >= rules.fillFrame) { o.filled++; ||| if (false) { o.filled++;
 objects: filling either way is enough ||| d.w >= rules.fillFrame && d.h >= rules.fillFrame ||| (d.w >= rules.fillFrame || d.h >= rules.fillFrame)
 objects: frame filling applies to cats too ||| if (g === 'people' && d.w ||| if (d.w
 closer: big people added ||| groups.people.includes(b.name) && b.w * b.h <= rules.closeMaxArea ||| groups.people.includes(b.name)
 closer: everything added ||| boxes.filter((b) => groups.people.includes(b.name) && ||| boxes.filter((b) =>
 closer: size edge excluded ||| b.w * b.h <= rules.closeMaxArea ||| b.w * b.h < rules.closeMaxArea
 rules: close-up not said ||| if (ob.people && ob.people.filled) notes.push ||| if (false) notes.push
+portrait: clothes ignored ||| if (worn.length && sum >= rules.clothesMin) { ||| if (false) {
+portrait: any clothes enough ||| if (worn.length && sum >= rules.clothesMin) { ||| if (worn.length) {
+portrait: unsure person enough ||| if (pp && pp.filled && pp.fillScore >= rules.personScore) { ||| if (pp && pp.filled) {
+portrait: every label is clothes ||| const worn = top.filter((l) => core.inGroup(l.index, clothes)); ||| const worn = top;
+portrait: fill score not kept ||| o.fillScore = Math.max(o.fillScore, d.score); ||| o.fillScore = 0;
 rules: text ignored ||| if (p.text) return { category: 'documents' ||| if (false) return { category: 'documents'
 rules: all labels counted ||| const top = (p.labels || []).slice(0, rules.topLabels); ||| const top = (p.labels || []);
 rules: first group wins ||| if (mine.length && (!best || sum > best.sum)) ||| if (mine.length && !best)

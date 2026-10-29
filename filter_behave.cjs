@@ -199,7 +199,9 @@ function pageFixtures() {
           { name: 'person', score: 0.75, x: 0.3, y: 0.55, w: 0.4, h: 0.45 }] } });
       await this.put(cam, 'Screenshot_20261029-100400.png', await this.picture(6, { w: 540, h: 1200, type: 'image/png' }));
       await this.put(cam, 'IMG_20261029_100300.png', await this.picture(7, { w: 1344, h: 2992, type: 'image/png' }));
-      await photo('PXL_20261029_100200000.jpg', 6, { faces: [{ w: 0.2, h: 0.2, score: 0.9 }, { w: 0.15, h: 0.18, score: 0.8 }] });
+      // Like Gary's suit photos (fifth run, 30/10/26): no face, a "person" filling the frame, and a suit seen.
+      await photo('PXL_20261029_100200000.jpg', 6, { objects: [{ name: 'person', score: 0.94, x: 0.03, y: 0, w: 0.94, h: 1 }],
+        labels: [{ index: 834, name: 'suit', score: 0.6 }, { index: 906, name: 'Windsor tie', score: 0.1 }] });
       await photo('PXL_20250101_120000000.jpg', 7, { objects: [{ name: 'cat', score: 0.8, w: 0.5, h: 0.4 }], labels: [{ index: 600, name: 'hook', score: 0.2 }] });
       for (let i = 0; i < 2; i++) await this.put(cam, 'PXL_20261029_11' + i + '000000.mp4', this.noise(3000 + i, i + 7));
       await this.put(cam, '.trashed-1767225600-PXL_20261001_090000000.jpg', await this.picture(9));
@@ -573,10 +575,10 @@ test('objectsFrom: boxes per folder, confident and big enough, biggest and best 
       d('person', 0.9, 0.2, 0.5), d('person', 0.49, 0.6, 0.75), d('person', 0.95, 0.1, 0.0995),
       d('dog', 0.7, 0.25, 0.5), d('cat', 0.8, 0.12, 0.15), d('pizza', 0.65, 0.2, 0.25), d('laptop', 0.99, 0.6, 0.5), d('bowl', 0.9, 0.4, 0.5), d('person', 0.5, 0.1, 0.2)]);
   });
-  eq(r.people, { count: 3, area: 0.8091, score: 0.9, name: 'person', best: 0.95, filled: 1 },
+  eq(r.people, { count: 3, area: 0.8091, score: 0.9, name: 'person', best: 0.95, filled: 1, fillScore: 0.6 },
     'people: three count (one unsure, one too small); one fills the frame at 0.9 x 0.9; one just short of it counts');
-  eq(r.pets, { count: 3, area: 0.9025, score: 0.9, name: 'cat', best: 0.9, filled: 0 }, 'pets: a cat filling the frame is still a cat');
-  eq(r.food, { count: 1, area: 0.05, score: 0.65, name: 'pizza', best: 0.65, filled: 0 }, 'food: a bowl is not food');
+  eq(r.pets, { count: 3, area: 0.9025, score: 0.9, name: 'cat', best: 0.9, filled: 0, fillScore: 0 }, 'pets: a cat filling the frame is still a cat');
+  eq(r.food, { count: 1, area: 0.05, score: 0.65, name: 'pizza', best: 0.65, filled: 0, fillScore: 0 }, 'food: a bowl is not food');
   const near = await page.evaluate(() => window.filter.core.closerPeople([
     { name: 'person', score: 0.7, x: 0, y: 0, w: 0.3, h: 0.4 }, { name: 'person', score: 0.7, x: 0, y: 0, w: 0.3, h: 0.401 },
     { name: 'dog', score: 0.9, x: 0, y: 0, w: 0.1, h: 0.1 }, { name: 'person', score: 0.5, x: 0, y: 0, w: 0.1, h: 0.2 }]).map((b) => b.name + ' ' + b.h));
@@ -699,7 +701,13 @@ test('categorize: the rules in order, each threshold at its edge', async () => {
       restaurant: { ...base, labels: [L(762, 'restaurant', 0.6), L(567, 'frying pan', 0.2), L(909, 'wok', 0.2)] },
       weakPerson: { ...base, labels: [L(526, 'desk', 0.16)], objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.41 } } },
       weakPersonOnly: { ...base, objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.38 } } },
-      closeUp: { ...base, labels: [L(600, 'hook', 0.1)], objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.89, filled: 1 } } },
+      closeUp: { ...base, labels: [L(600, 'hook', 0.1)], objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.89, filled: 1, fillScore: 0.89 } } },
+      portrait: { ...base, text: true, labels: [L(834, 'suit', 0.6)], objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.94, filled: 1, fillScore: 0.94 } } },
+      portraitEdge: { ...base, labels: [L(834, 'suit', 0.15), L(457, 'bow tie', 0.1)], objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.65, filled: 1, fillScore: 0.65 } } },
+      portraitThin: { ...base, labels: [L(834, 'suit', 0.15), L(457, 'bow tie', 0.09)], objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.9, filled: 1, fillScore: 0.9 } } },
+      portraitUnsure: { ...base, labels: [L(834, 'suit', 0.8)], objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.649, filled: 1, fillScore: 0.649 } } },
+      jeans: { ...base, labels: [L(608, 'jean', 0.5), L(630, 'Loafer', 0.3)], objects: { people: { count: 0, area: 0, score: 0, name: null, best: 0.9, filled: 1, fillScore: 0.9 } } },
+      suitNoPerson: { ...base, labels: [L(834, 'suit', 0.9)] },
     };
     return Object.fromEntries(Object.entries(cases).map(([k, v]) => [k, c.categorize(v)]));
   });
@@ -728,6 +736,9 @@ test('categorize: the rules in order, each threshold at its edge', async () => {
   eq(cat('restaurant'), 'other', 'a restaurant, a frying pan or a wok is not food');
   eq(r.weakPerson.reason, 'nothing clear (best guess: desk 0.16; best person 0.41)', 'other shows the best person score');
   eq(r.weakPersonOnly.reason, 'nothing clear (best person 0.38)', 'with no labels too');
+  eq([cat('portrait'), r.portrait.reason], ['people', 'a person filling the frame, 0.94 (suit 0.60)'], 'a tight portrait in a suit: people, before text');
+  eq([cat('portraitEdge'), cat('portraitThin'), cat('portraitUnsure')], ['people', 'other', 'other'], 'clothes add up to 0.25 at a person score of 0.65: both edges');
+  eq([cat('jeans'), cat('suitNoPerson')], ['other', 'other'], 'jeans and shoes are not worn-clothes evidence; a suit with no person is not people');
   eq([cat('closeUp'), r.closeUp.reason], ['other', 'nothing clear (best guess: hook 0.10; best person 0.89; a person fills the frame: a close-up, not counted)'], 'a close-up is said so');
   await ctx.close();
 }, { core: true });
@@ -907,9 +918,10 @@ test('run and review: each photo lands in the right folder, grid per folder, oth
   await sort(page);
   const calls = await page.evaluate(() => [window.__calls, window.filter.state.lastRun.closer]);
   const twice = Object.keys(calls[0]).filter((n) => calls[0][n] === 2).sort();
-  eq(twice, ['PXL_20250101_120000000.jpg', 'PXL_20261029_100500000.jpg', 'PXL_20261029_100600000.jpg', 'PXL_20261029_100700000.jpg',
+  eq(twice, ['PXL_20250101_120000000.jpg', 'PXL_20261029_100600000.jpg', 'PXL_20261029_100700000.jpg',
     'PXL_20261029_100800000.jpg', 'PXL_20261029_100900000.jpg', 'PXL_20261029_101000000.jpg'], 'closer look for everything not already people or a screenshot');
-  eq([calls[0]['PXL_20261029_100200000.jpg'], calls[0]['Screenshot_20261029-100400.png'], calls[0]['IMG_20261029_100300.png'], calls[1]], [1, 1, 1, 7], 'faces and screenshots skip it');
+  eq([calls[0]['PXL_20261029_100200000.jpg'], calls[0]['Screenshot_20261029-100400.png'], calls[0]['IMG_20261029_100300.png'], calls[0]['PXL_20261029_100500000.jpg'], calls[1]],
+    [1, 1, 1, 1, 6], 'people, screenshots and close-ups (a person filling the frame) skip it');
   eq(await screen(page), 'review', 'screen');
   eq(sortPlan(await plan(page)), sortPlan(EXPECTED_PLAN), 'plan');
   const r = await page.evaluate(() => ({
@@ -931,6 +943,7 @@ test('run and review: each photo lands in the right folder, grid per folder, oth
   eq(r.reasons['PXL_20261029_100500000.jpg'], 'nothing clear (best guess: hook 0.12; best person 0.89; a person fills the frame: a close-up, not counted)',
     'the hand close-up: a quarter-only face at 0.80, a frame-filling "person" and big pieces in the closer look are not people');
   eq(r.reasons['PXL_20250101_120000000.jpg'], 'cat 0.80 (seen)', 'a cat box');
+  eq(r.reasons['PXL_20261029_100200000.jpg'], 'a person filling the frame, 0.94 (suit 0.60)', 'a tight portrait in a suit is people');
   eq(r.overflow, false, 'no sideways scroll');
   assert(page.errors.length === 0, page.errors.join('; '));
   await ctx.close();
@@ -1005,7 +1018,7 @@ test('copy: every copy lands in its folder byte-identical, originals untouched, 
   eq(lines.length, 11, 'a line per photo');
   assert(lines.includes('PXL_20261029_100900000.jpg ▸ other (filter said pets): golden retriever 0.40, pets 0.60'), 'changed photo line');
   assert(lines.includes('PXL_20261029_101000000.jpg ▸ people: 3 people, 0.70 (closer look)'), 'classroom line');
-  assert(/, closer look for 7$/.test(lines[0]), 'closer look count in the header: ' + lines[0]);
+  assert(/, closer look for 6$/.test(lines[0]), 'closer look count in the header: ' + lines[0]);
   eq(await text(page, '#details-text'), clip, 'the same text on screen');
   assert(page.errors.length === 0, page.errors.join('; '));
   await ctx.close();

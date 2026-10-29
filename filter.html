@@ -12,7 +12,7 @@ scenery); photos in "other" stay where they are and are not copied. Every copy
 is read back and checked byte for byte (size and SHA-256). F1 never deletes or
 overwrites anything. Each run writes a log to filter-logs/ in the picked folder.
 
-APP_VERSION 0.1.4 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.1.5 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -54,7 +54,11 @@ change the version here in the same commit as the file.
   the frame with no face is a close-up of part of a body, not a person, and the
   closer look adds only small people (fourth run, 30/10/26: a chest, a hand with
   a bottle, close-ups of a body and a pile of noodles were all "a person", the
-  hand "4 people" from pieces seen in four parts).
+  hand "4 people" from pieces seen in four parts). A frame-filling "person"
+  still counts when the classifier sees clothes worn on the body (a suit, a
+  tie, a jersey): tight portraits fill the frame too (fifth run, 30/10/26:
+  thirteen suit photos lost from people by the close-up rule alone). After a
+  close-up the closer look is skipped: small "people" inside it are pieces.
 
 How the file is laid out:
   1. Content-Security-Policy: the browser itself refuses any network call to
@@ -314,7 +318,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.1.4';
+const APP_VERSION = '0.1.5';
 
 // The folders filter knows, in the order they are shown. Photos in "other"
 // stay where they are: nothing is copied for them.
@@ -354,6 +358,7 @@ const RULES = {
   sameInside: 0.7,      // ... as is a box lying this much inside another (a person cut by a part's edge)
   fillFrame: 0.9,       // a person box this share of both the width and the height is a close-up of part of a body
   closeMaxArea: 0.12,   // the closer look adds person boxes up to this share of the photo: people far away
+  clothesMin: 0.25,     // ... unless the classifier's worn-clothes labels add up to this: a tight portrait
   topLabels: 10,        // the classifier's best labels that are added up per folder
   labelMin: 0.25,       // a folder's added-up score must reach this to win
   screenRatio: [0.40, 0.50],   // short side / long side of a phone screen (Pixel 9 Pro XL: 0.45)
@@ -378,6 +383,18 @@ const LABEL_GROUPS = {
     [497, 497, 'church', 'church'], [832, 832, 'stupa', 'stupa'], [649, 649, 'megalith', 'megalith'], [525, 525, 'dam', 'dam'],
     [562, 562, 'fountain', 'fountain'], [437, 437, 'beacon', 'beacon'], [500, 500, 'cliff dwelling', 'cliff dwelling']],
 };
+
+// Clothes worn on the body, in the classifier's labels, as index ranges like
+// LABEL_GROUPS (filter_checks.cjs checks the names). They tell a tight portrait
+// (a person filling the frame, in a suit) from a close-up of part of a body.
+// Jeans, underwear, swimwear and shoes are left out: close-ups show those too.
+const CLOTHES = [[834, 834, 'suit', 'suit'], [457, 457, 'bow tie', 'bow tie'], [906, 906, 'Windsor tie', 'Windsor tie'],
+  [451, 451, 'bolo tie', 'bolo tie'], [610, 610, 'jersey', 'jersey'], [841, 841, 'sweatshirt', 'sweatshirt'],
+  [474, 474, 'cardigan', 'cardigan'], [617, 617, 'lab coat', 'lab coat'], [869, 869, 'trench coat', 'trench coat'],
+  [568, 568, 'fur coat', 'fur coat'], [614, 614, 'kimono', 'kimono'], [399, 400, 'abaya', 'academic gown'],
+  [652, 652, 'military uniform', 'military uniform'], [735, 735, 'poncho', 'poncho'], [501, 501, 'cloak', 'cloak'],
+  [887, 887, 'vestment', 'vestment'], [824, 824, 'stole', 'stole'], [578, 578, 'gown', 'gown'],
+  [465, 465, 'bulletproof vest', 'bulletproof vest'], [411, 411, 'apron', 'apron']];
 
 // The object detector's labels (the 80 COCO objects) that point to a folder.
 // filter_checks.cjs checks every name against the labels inside the model.
@@ -665,7 +682,7 @@ core.dedupe = (boxes, rules = RULES) => {
 // close-up of part of a body: it is counted as filled, not as a person.
 core.objectsFrom = (boxes, rules = RULES, groups = OBJECT_GROUPS) => {
   const out = {};
-  for (const g of Object.keys(groups)) out[g] = { count: 0, area: 0, score: 0, name: null, best: 0, filled: 0 };
+  for (const g of Object.keys(groups)) out[g] = { count: 0, area: 0, score: 0, name: null, best: 0, filled: 0, fillScore: 0 };
   for (const d of boxes) {
     for (const g of Object.keys(groups)) if (groups[g].includes(d.name)) out[g].best = Math.max(out[g].best, d.score);
     const area = d.w * d.h;
@@ -673,7 +690,7 @@ core.objectsFrom = (boxes, rules = RULES, groups = OBJECT_GROUPS) => {
     for (const g of Object.keys(groups)) {
       if (!groups[g].includes(d.name)) continue;
       const o = out[g];
-      if (g === 'people' && d.w >= rules.fillFrame && d.h >= rules.fillFrame) { o.filled++; continue; }
+      if (g === 'people' && d.w >= rules.fillFrame && d.h >= rules.fillFrame) { o.filled++; o.fillScore = Math.max(o.fillScore, d.score); continue; }
       o.count++;
       o.area = Math.max(o.area, area);
       if (d.score > o.score) { o.score = d.score; o.name = d.name; }
@@ -692,10 +709,11 @@ core.inGroup = (index, ranges) => ranges.some(([a, z]) => index >= a && index <=
 
 // The rules, in order. p: { name, format, make, width, height, faces, objects, labels, text }.
 // 1 screenshots: by file name, or a screen-shaped PNG with no camera data;
-// 2 people: a face, or person boxes (two or more, or one big and sure one);
+// 2 people: a face, or person boxes (two or more, or one big and sure one), or a
+//   frame-filling one with worn clothes seen (a tight portrait, not a close-up);
 // 3 documents: the picture looks like text; 4 a sure cat, dog or food box;
 // 5 the folder whose labels add up highest, if high enough; 6 other.
-core.categorize = (p, rules = RULES, groups = LABEL_GROUPS) => {
+core.categorize = (p, rules = RULES, groups = LABEL_GROUPS, clothes = CLOTHES) => {
   if (/^screenshot/i.test(p.name)) return { category: 'screenshots', reason: 'screenshot by its name' };
   if (p.format === 'png' && !p.make && p.width && p.height) {
     const short = Math.min(p.width, p.height), long = Math.max(p.width, p.height);
@@ -711,12 +729,19 @@ core.categorize = (p, rules = RULES, groups = LABEL_GROUPS) => {
   if (pp && (pp.count >= rules.peopleCount || (pp.area >= rules.personArea && pp.score >= rules.personScore))) {
     return { category: 'people', reason: (pp.count === 1 ? 'a person' : pp.count + ' people') + ', ' + pp.score.toFixed(2) };
   }
+  const top = (p.labels || []).slice(0, rules.topLabels);
+  if (pp && pp.filled && pp.fillScore >= rules.personScore) {
+    const worn = top.filter((l) => core.inGroup(l.index, clothes));
+    const sum = worn.reduce((s, l) => s + l.score, 0);
+    if (worn.length && sum >= rules.clothesMin) {
+      return { category: 'people', reason: 'a person filling the frame, ' + pp.fillScore.toFixed(2) + ' (' + worn[0].name + ' ' + worn[0].score.toFixed(2) + ')' };
+    }
+  }
   if (p.text) return { category: 'documents', reason: 'mostly text' };
   for (const g of ['pets', 'food']) {
     const o = ob[g];
     if (o && o.count && o.score >= rules.thingScore && o.area >= rules.thingArea) return { category: g, reason: o.name + ' ' + o.score.toFixed(2) + ' (seen)' };
   }
-  const top = (p.labels || []).slice(0, rules.topLabels);
   let best = null;
   for (const g of Object.keys(groups)) {
     const mine = top.filter((l) => core.inGroup(l.index, groups[g]));
@@ -1184,7 +1209,8 @@ async function runSort() {
         const facts = { name: p.entry.name, format: p.info.format, make: p.info.make,
           width: p.size.w, height: p.size.h, faces: r.faces, objects, labels: r.labels, text: text.isText };
         let c = core.categorize(facts);
-        if (c.category !== 'people' && c.category !== 'screenshots') {
+        // No closer look after a close-up (a person filling the frame): small "people" inside it are pieces of it.
+        if (c.category !== 'people' && c.category !== 'screenshots' && !objects.people.filled) {
           // A closer look, for people far away only: the small person boxes it finds
           // join the first look's, overlapping ones are merged, and the same rules decide again.
           const near = core.closerPeople(await recog.closer(p.big, p.entry));
@@ -1461,7 +1487,7 @@ $('#btn-install').addEventListener('click', async () => {
 
 /* ---------- Start ---------- */
 
-window.filter = { core, config, RULES, LABEL_GROUPS, OBJECT_GROUPS, CATEGORIES, recog, state, show, runDetails };
+window.filter = { core, config, RULES, LABEL_GROUPS, CLOTHES, OBJECT_GROUPS, CATEGORIES, recog, state, show, runDetails };
 
 show('start');
 window.filterReady = task('opening', boot);
