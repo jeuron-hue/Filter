@@ -1,0 +1,4 @@
+# Text files check out with LF line endings on every machine, Windows too (the rig's
+# git has core.autocrlf=true). The static checks and the vendored sha256 sums read the
+# files exactly as committed.
+* text=auto eol=lf

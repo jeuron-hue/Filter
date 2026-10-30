@@ -70,7 +70,7 @@ const APP_SOURCE = ['filter.html', 'index.html', 'sw.js', 'manifest.webmanifest'
 // minimum; the rest is docs and the test suites.
 const ALLOWED_TOP = new Set([
   'filter.html', 'index.html', 'manifest.webmanifest', 'sw.js', 'icons', 'vendor',
-  'README.md', 'CLAUDE.md', 'CHANGELOG.md', '.gitignore', '.git', 'package.json', 'package-lock.json',
+  'README.md', 'CLAUDE.md', 'CHANGELOG.md', '.gitignore', '.gitattributes', '.git', 'package.json', 'package-lock.json',
   'filter_checks.cjs', 'filter_behave.cjs', 'filter_mutate.sh',
   'reference', 'node_modules', // both gitignored
 ]);
