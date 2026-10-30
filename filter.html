@@ -19,7 +19,7 @@ not copied. Every copy is read back and checked byte for byte (size and SHA-256)
 filter never deletes or overwrites anything, and never writes to filter-examples/.
 Each run writes a log to filter-logs/ in the picked folder.
 
-APP_VERSION 0.3.3 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.3.4 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -201,6 +201,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
 .count{font-family:var(--font-mono);font-size:40px;line-height:48px;font-weight:500;color:var(--ink);text-align:center;margin:12px 0 0}
 .bar-track{height:4px;background:var(--line-strong);border-radius:2px;overflow:hidden}
 .bar-fill{height:100%;width:0;background:var(--amber);transition:width .2s}
+.awake-cap{text-align:center;color:var(--faint)}
 .tally{display:flex;flex-wrap:wrap;gap:6px 14px;justify-content:center;text-align:center}
 
 /* Review: a grid per proposed folder. */
@@ -306,6 +307,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
     <div class="bar-track"><div class="bar-fill" id="run-fill"></div></div>
     <div class="tally edge" id="run-tally"></div>
     <p class="cap" id="run-cap" style="text-align:center"></p>
+    <p class="cap awake-cap">The screen stays on while filter works. If you leave filter, it waits and carries on when you come back.</p>
     <button class="btn" id="btn-stop-run" style="align-self:center">Stop and review</button>
   </section>
 
@@ -322,6 +324,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
     <p class="count" id="copy-count">0 / 0</p>
     <div class="bar-track"><div class="bar-fill" id="copy-fill"></div></div>
     <p class="cap" id="copy-cap" style="text-align:center"></p>
+    <p class="cap awake-cap">The screen stays on while filter works. If you leave filter, it waits and carries on when you come back.</p>
   </section>
 
   <!-- Done: what was done. -->
@@ -373,7 +376,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.3.3';
+const APP_VERSION = '0.3.4';
 
 // The folders filter knows, in the order they are shown. Photos and videos in
 // "other" stay where they are: nothing is copied for them.
@@ -409,6 +412,7 @@ const config = {
   frameWaitMs: 3000,    // how long to wait for the browser to show the frame asked for
   frameSlack: 0.25,     // ... a frame shown this close in time (seconds) counts as it
   holdMs: 500,          // review: a press this long on a picture starts picking several
+  videoTries: 3,        // a video read while filter left the screen is read again, up to this many times in all
 };
 
 // The rules that turn what the models see into a folder. Each threshold is named
@@ -1167,14 +1171,50 @@ async function task(label, fn) {
   state.busy = true; taskLabel = label; taskStart = Date.now();
   refreshStatus();
   taskTimer = setInterval(refreshStatus, 1000);
+  awake.on();
   try { await fn(); }
   catch (e) { notice('Something went wrong: ' + errText(e)); }
   finally {
+    awake.off();
     clearInterval(taskTimer);
     state.busy = false;
     refreshStatus();
   }
 }
+
+// The screen is kept on while filter works (Gary, 30/10/26). Android freezes a
+// web app soon after it leaves the screen, and a web app cannot work in the
+// background, so a run only goes on while filter is shown; with the screen kept
+// on, the phone can be put down for a long run. The browser lets go of the lock
+// when filter leaves the screen; it is taken again when filter comes back. If the
+// browser refuses (low battery, say), the run goes on all the same.
+const awake = {
+  lock: null, want: false,
+  on() { this.want = true; this.take(); },
+  async take() {
+    if (!this.want || this.lock || !('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
+    try {
+      const lock = await navigator.wakeLock.request('screen');
+      if (!this.want) { lock.release().catch(() => {}); return; }
+      this.lock = lock;
+      lock.addEventListener('release', () => { if (this.lock === lock) this.lock = null; });
+    } catch (e) { /* refused: the run goes on */ }
+  },
+  off() {
+    this.want = false;
+    if (this.lock) { this.lock.release().catch(() => {}); this.lock = null; }
+  },
+};
+
+// How often filter has left the screen, and a wait for it to be back on screen.
+let timesHidden = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') awake.take(); else timesHidden++;
+});
+const onScreen = () => (document.visibilityState === 'visible' ? Promise.resolve() : new Promise((resolve) => {
+  const back = () => { if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', back); resolve(); } };
+  document.addEventListener('visibilitychange', back);
+}));
 
 /* ---------- Stored folder (IndexedDB) ---------- */
 
@@ -1508,9 +1548,24 @@ function smaller(big) {
 // once can fail.
 let videoTurn = Promise.resolve();
 function prepareVideo(entry) {
-  const job = videoTurn.then(() => videoFrames(entry));
+  const job = videoTurn.then(() => videoOnScreen(entry));
   videoTurn = job.then(() => {}, () => {});
   return job;
+}
+
+// A video is only read while filter is on screen: off screen the browser stops
+// showing and decoding it, so a frame cannot be confirmed and a seek may never
+// end. If filter left the screen while a video was being read, its frames are
+// thrown away and it is read again once filter is back, up to config.videoTries
+// times; whatever came of the last try stands.
+async function videoOnScreen(entry) {
+  for (let k = 1; ; k++) {
+    await onScreen();
+    const before = timesHidden;
+    const p = await videoFrames(entry);
+    if (timesHidden === before || k >= config.videoTries) return p;
+    release(p);
+  }
 }
 async function videoFrames(entry) {
   const t0 = now();
