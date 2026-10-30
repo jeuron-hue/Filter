@@ -40,7 +40,7 @@ Gary keeps no backup (no Google Photos backup). On Android a web app cannot rena
 - Models come from Google's model store. Claude's cloud session reached it on 29/10/26 and fetched EfficientNet-Lite0 directly; the rig shell cannot reach it, so there Gary downloads each model and Claude vendors it. Either way each model is vendored with its sha256, version and licence in the filter.html build notes.
 
 ## Design
-filter uses retouch's darkroom style (Gary's choice, 29/10/26), not Lab Book, so the two apps look like a pair. The spec is retouch's CLAUDE.md Design section; the parts that apply:
+filter's UI is not decided yet (Gary, 30/10/26): the functions are built first and the UI is redesigned after. Until Gary decides, the build keeps retouch's darkroom style as a stand-in (filter_checks.cjs holds the tokens below while it does); it is not a decision. The parts of retouch's CLAUDE.md Design section in use:
 - Dark only. Neutral near-black surround so the pictures are judged fairly; the pictures are the brightest thing on screen. No light theme.
 - Tokens (CSS custom properties at the top of filter.html), the same values as retouch: stage #0B0B0B, chrome #141312, raised #1D1B19, pressed #2E2B27, lines #2C2925 / #3A3631, ink #EEE8DE, muted #A59E92, faint #8A8377. One accent, the amber safelight #F2A33A (text on it #1B1205). Pass #7DBE8A, watch #E0A84A, fail #E57360.
 - Type: Barlow Semi Condensed 400/600 for labels and buttons (labels in spaced capitals), IBM Plex Mono 400/500 for numbers and counts, vendored in vendor/fonts/ (copied from retouch).
