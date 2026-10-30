@@ -112,8 +112,9 @@ hash: schedule added without carry ||| W[i] = (W[i - 16] + s0 + W[i - 7] + s1) |
 hash: a word's bytes in the wrong order ||| (lo >>> (24 - 8 * k)) & 255 ||| (lo >>> (8 * k)) & 255
 frames: times not scaled by the length ||| at.map((k) => k * duration) ||| at.map((k) => k)
 frames: an endless video accepted ||| Number.isFinite(duration) && duration > 0 ? ||| duration > 0 ?
-vote: one frame of three enough ||| if (2 * n[top] <= frames.length) ||| if (n[top] < 1)
-vote: half is enough ||| if (2 * n[top] <= frames.length) ||| if (2 * n[top] < frames.length)
+vote: frames that see nothing vote too ||| for (const f of frames) if (f.category !== stay) n[f.category] ||| for (const f of frames) n[f.category]
+vote: a tie goes to the first ||| if (ranked.length > 1 && n[ranked[1]] === n[ranked[0]]) return ||| if (false) return
+vote: nothing seen not caught ||| if (!ranked.length) return { category: stay, ||| if (false) return { category: stay,
 vote: reason from the wrong frame ||| frames.find((f) => f.category === top).reason ||| frames[0].reason
 vote: disagreeing frames go to the first ||| return { category: stay, reason: 'frames disagree: ' ||| return { category: frames[0].category, reason: 'frames disagree: '
 mean: first frame only ||| for (const v of vecs) for ||| for (const v of vecs.slice(0, 1)) for

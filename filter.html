@@ -19,7 +19,7 @@ not copied. Every copy is read back and checked byte for byte (size and SHA-256)
 filter never deletes or overwrites anything, and never writes to filter-examples/.
 Each run writes a log to filter-logs/ in the picked folder.
 
-APP_VERSION 0.3.1 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.3.3 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -76,8 +76,10 @@ change the version here in the same commit as the file.
   0.60 to 0.96 with each other and 0.06 to 0.52 with other patterns.
   Videos (F3) need no new model. Three frames are taken, 10 %, 50 % and 90 % of
   the way through, each decoded like a photo. By description each frame goes
-  through the same models and rules and the folder most frames agree on wins
-  (two of three); frames that all disagree leave the video in other. By example
+  through the same models and rules; a frame that sees nothing clear does not
+  vote, and the folder seen in the most frames wins (one frame of scenery and
+  two of nothing is scenery); a tie, or nothing in any frame, leaves the video
+  in other. By example
   the three frames' numbers are averaged and compared with Gary's example videos
   only (his choice, 30/10/26: a folder with no example videos takes no videos),
   against bars of their own (minSimVideo, minGapVideo). Videos are opened one at
@@ -90,7 +92,7 @@ How the file is laid out:
      another origin (connect-src 'self'), so photos cannot leave the phone.
   2. CSS: darkroom tokens (the same as retouch), then the screens.
   3. HTML: a status strip, one section per screen (start, setup, run, review,
-     copy, done), the bottom bar, and the sheet for sending a photo elsewhere.
+     copy, done), the bottom bar, and the sheet for sending one picture, or several picked, elsewhere.
   4. Script:
      a. Settings and the recognition rules.
      b. CORE: pure functions: reading a folder in batches, choosing the newest
@@ -209,6 +211,13 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
 .ph{position:relative;aspect-ratio:1;padding:0;border:0;border-radius:2px;overflow:hidden;background:var(--raised);min-width:0;min-height:0}
 .ph img{width:100%;height:100%;object-fit:cover;display:block}
 .ph.changed{outline:2px solid var(--amber);outline-offset:-2px}
+/* A long press must not open the browser's own image menu or start a drag. */
+.ph{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+.ph img{pointer-events:none}
+/* Picked, while picking several: a thicker amber frame and a tick. */
+.ph.picked{outline:3px solid var(--amber);outline-offset:-3px}
+.ph.picked img{opacity:.72}
+.ph.picked::after{content:"\2713";position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:50%;background:var(--amber);color:var(--on-amber);font:600 14px/22px var(--font-ui);text-align:center}
 .ph .bad{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:10px var(--font-mono);color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
 /* A video in the grid: its length on a film-edge tag in the corner. */
 .ph .vid{position:absolute;left:3px;bottom:3px;padding:0 4px;border-radius:2px;background:rgba(11,11,11,.72);font:10px/16px var(--font-mono);font-variant-numeric:tabular-nums;letter-spacing:.06em;color:var(--amber)}
@@ -235,6 +244,8 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
 .targets button{min-height:48px;border:1px solid var(--line);background:var(--raised);color:var(--ink-2);border-radius:4px;font-size:12px;font-weight:600;letter-spacing:.12em;text-transform:uppercase}
 .targets button[aria-pressed="true"]{border-color:var(--amber);color:var(--amber);background:var(--amber-deep)}
 
+#video-stage{position:fixed;left:0;top:0;width:2px;height:2px;overflow:hidden;opacity:.01;pointer-events:none;z-index:-1}
+#video-stage video{width:2px;height:2px}
 .notice{position:fixed;left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom));z-index:6;display:flex;align-items:center;gap:8px;background:var(--chrome);border:1px solid var(--line-strong);border-radius:4px;padding:0 0 0 12px;font-size:14px;line-height:19px;color:var(--ink-2)}
 .notice .text{flex:1;padding:10px 0}
 .notice .btn-primary{min-height:36px;margin:4px 0}
@@ -300,7 +311,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
 
   <!-- Review: the plan, a grid per proposed folder. -->
   <section class="screen" data-screen="review">
-    <p class="cap" id="review-cap">Tap a picture to send it to another folder. Nothing is copied until you tap Copy.</p>
+    <p class="cap" id="review-cap">Tap a picture to send it to another folder; press and hold to pick several. Nothing is copied until you tap Copy.</p>
     <div id="groups" style="display:flex;flex-direction:column;gap:18px"></div>
     <button class="btn" id="btn-review-details" style="align-self:center">Copy run details</button>
     <details class="card" id="review-details"><summary class="cap">Run details: each file, its folder and why</summary><pre id="review-details-text"></pre></details>
@@ -334,6 +345,8 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
     <span class="edge" id="bar-edge"></span>
     <button class="btn" id="btn-restart" hidden>Start over</button>
     <button class="btn btn-primary" id="btn-copy" hidden>Copy</button>
+    <button class="btn" id="btn-pick-cancel" hidden>Cancel</button>
+    <button class="btn btn-primary" id="btn-pick-send" hidden>Send to</button>
   </div>
 </footer>
 
@@ -347,6 +360,10 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
   <button class="btn" id="sheet-cancel">Cancel</button>
 </div>
 
+<!-- The video being looked at: on the page (the browser only shows frames of a
+     video on the page) but too small and faint to see. -->
+<div id="video-stage" aria-hidden="true"></div>
+
 <div class="notice" id="notice" hidden><span class="text" id="notice-text"></span><button class="btn btn-primary" id="notice-action" hidden></button><button class="close" id="notice-close" aria-label="Close">×</button></div>
 
 <script>
@@ -356,7 +373,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.3.1';
+const APP_VERSION = '0.3.3';
 
 // The folders filter knows, in the order they are shown. Photos and videos in
 // "other" stay where they are: nothing is copied for them.
@@ -389,6 +406,9 @@ const config = {
   videoWaitMs: 20000,   // a video that does not open or seek in this time is left where it is
   frameTries: 3,        // a frame the browser will not hand over is tried this many times,
   frameNudge: 0.1,      // ... each this many seconds later than the last
+  frameWaitMs: 3000,    // how long to wait for the browser to show the frame asked for
+  frameSlack: 0.25,     // ... a frame shown this close in time (seconds) counts as it
+  holdMs: 500,          // review: a press this long on a picture starts picking several
 };
 
 // The rules that turn what the models see into a folder. Each threshold is named
@@ -939,15 +959,19 @@ core.meanVec = (vecs) => {
 core.frameTimes = (duration, at) => (Number.isFinite(duration) && duration > 0 ? at.map((k) => k * duration) : []);
 
 // A video by description: each frame read went through the rules on its own;
-// frames: [{ category, reason }]. The folder more than half the frames agree on
-// wins (two of three), with the first such frame's reason; otherwise the video
-// stays (in other), and the reason lists what each frame said.
+// frames: [{ category, reason }]. A frame in `stay` (other) saw nothing clear, so
+// it does not vote: the folder seen in the most of the other frames wins, with
+// the first such frame's reason (Gary, 30/10/26: two videos of scenery all
+// through had one frame seen as scenery and two as nothing clear). Two folders
+// seen in as many frames, or nothing clear in any frame, and the video stays.
 core.videoVote = (frames, stay = STAY) => {
   if (!frames.length) return { category: stay, reason: 'no frame could be read' };
   const n = {};
-  for (const f of frames) n[f.category] = (n[f.category] || 0) + 1;
-  const top = Object.keys(n).sort((a, b) => n[b] - n[a])[0];
-  if (2 * n[top] <= frames.length) return { category: stay, reason: 'frames disagree: ' + frames.map((f) => f.category).join(', ') };
+  for (const f of frames) if (f.category !== stay) n[f.category] = (n[f.category] || 0) + 1;
+  const ranked = Object.keys(n).sort((a, b) => n[b] - n[a]);
+  if (!ranked.length) return { category: stay, reason: 'nothing clear in any frame: ' + frames[0].reason };
+  if (ranked.length > 1 && n[ranked[1]] === n[ranked[0]]) return { category: stay, reason: 'frames disagree: ' + frames.map((f) => f.category).join(', ') };
+  const top = ranked[0];
   return { category: top, reason: n[top] + ' of ' + frames.length + ' frames ' + top + ': ' + frames.find((f) => f.category === top).reason };
 };
 
@@ -1099,6 +1123,7 @@ const state = {
   plan: [],           // one item per file: { name, handle, kind, category, first, reason, thumb, score, duration, frames }
   stopRequested: false,
   recheck: false,     // a re-check run: files already sorted included, nothing copied
+  picked: null,       // review: while picking several, the Set of their places in the plan; null otherwise
   wasIn: new Map(),   // name -> the folder it was already in when the run started
   lastRun: null,
 };
@@ -1106,11 +1131,21 @@ const state = {
 function show(screen) {
   state.screen = screen;
   document.body.dataset.screen = screen;
-  $('#btn-copy').hidden = screen !== 'review' || state.recheck;
-  $('#btn-restart').hidden = screen !== 'review';
+  if (screen !== 'review') state.picked = null;
+  barButtons();
   if (screen !== 'review') $('#bar-edge').textContent = fmtDate(Date.now()) + ' ▸ v' + APP_VERSION;
   window.scrollTo(0, 0);
   refreshStatus();
+}
+
+// The bottom bar's buttons: on the review, Start over and Copy, or, while picking
+// several, Cancel and Send to.
+function barButtons() {
+  const review = state.screen === 'review', picking = review && !!state.picked;
+  $('#btn-copy').hidden = !review || state.recheck || picking;
+  $('#btn-restart').hidden = !review || picking;
+  $('#btn-pick-cancel').hidden = !picking;
+  $('#btn-pick-send').hidden = !picking;
 }
 
 // While work runs, the strip says what and counts the seconds, so a slow step
@@ -1481,6 +1516,7 @@ async function videoFrames(entry) {
   const t0 = now();
   const v = document.createElement('video');
   v.muted = true; v.playsInline = true; v.preload = 'auto';
+  $('#video-stage').replaceChildren(v);
   const frames = [];
   let url = null;
   try {
@@ -1492,7 +1528,8 @@ async function videoFrames(entry) {
     if (!times.length) throw new Error('its length cannot be read');
     const k = Math.min(1, config.closeSide / Math.max(w, h));
     for (const at of times) {
-      const f = { at, big: await frameAt(v, at, { resizeWidth: Math.max(1, Math.round(w * k)), resizeHeight: Math.max(1, Math.round(h * k)), resizeQuality: 'medium' }) };
+      const got = await frameAt(v, at, { resizeWidth: Math.max(1, Math.round(w * k)), resizeHeight: Math.max(1, Math.round(h * k)), resizeQuality: 'medium' });
+      const f = { at, sure: got.sure, big: got.bmp };
       frames.push(f);
       f.bmp = await smaller(f.big);
     }
@@ -1503,26 +1540,50 @@ async function videoFrames(entry) {
   } finally {
     v.removeAttribute('src');
     v.load();
+    $('#video-stage').replaceChildren();
     if (url) URL.revokeObjectURL(url);
   }
 }
 
-// The frame at `at` seconds. A seek can say it is done before the frame is
-// decoded: Gary's first run (30/10/26) had one ordinary FHD video refused with
-// "the image source is not usable". So this waits until a frame is there, and
-// if taking it still fails, seeks again a little later (config.frameNudge
-// seconds each time) up to config.frameTries times in all.
+// The frame at `at` seconds, as { bmp, sure }. On the phone a seek can say it is
+// done before the new frame is on show: Gary's first run (30/10/26) had one video
+// refused with "the image source is not usable", and his next runs showed the
+// same picture taken for two or three frames (the very same scores), so one video
+// went to different folders on two runs. So this waits until the browser shows a
+// frame from the time asked for (sure: true), or config.frameWaitMs passes (sure:
+// false, kept in the run details); if taking it still fails, it seeks again a
+// little later (config.frameNudge seconds each time) up to config.frameTries times.
 async function frameAt(v, at, opts) {
   for (let k = 0; ; k++) {
     const t = Math.min(at + k * config.frameNudge, v.duration);
+    const shown = frameShown(v, t);
     await mediaEvent(v, 'seeked', () => { v.currentTime = t; });
     try {
       if (v.readyState < 2) await mediaEvent(v, 'canplay', () => {});
-      return await createImageBitmap(v, opts);
+      const sure = await shown;
+      return { bmp: await createImageBitmap(v, opts), sure };
     } catch (e) {
       if (k + 1 >= config.frameTries) throw e;
     }
   }
+}
+
+// True once the video shows a frame from within config.frameSlack seconds of t;
+// false if none does within config.frameWaitMs, or the browser cannot say.
+// Asked before the seek starts, so the frame it brings is not missed. The
+// browser only shows frames of a video on the page, hence #video-stage.
+function frameShown(v, t) {
+  if (!v.requestVideoFrameCallback) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let id = 0;
+    const timer = setTimeout(() => { v.cancelVideoFrameCallback(id); resolve(false); }, config.frameWaitMs);
+    const ask = () => {
+      id = v.requestVideoFrameCallback((when, meta) => {
+        if (Math.abs(meta.mediaTime - t) <= config.frameSlack) { clearTimeout(timer); resolve(true); } else ask();
+      });
+    };
+    ask();
+  });
 }
 
 // Wait for the video's event `name` after start(); a playback error, or no answer
@@ -1683,7 +1744,7 @@ async function recogniseVideo(p, item, folders, stats) {
   item.frames = [];
   for (const f of p.frames) {
     const c = await describe({ entry: p.entry, info: p.info, big: f.big, bmp: f.bmp, size: p.size }, stats);
-    item.frames.push({ at: f.at, category: c.category, reason: c.reason });
+    item.frames.push({ at: f.at, sure: f.sure, category: c.category, reason: c.reason });
   }
   return core.videoVote(item.frames);
 }
@@ -1741,13 +1802,17 @@ function renderReview() {
     const grid = document.createElement('div'); grid.className = 'grid';
     for (const { p, i } of items) {
       const b = document.createElement('button');
-      b.className = 'ph' + (p.category !== p.first ? ' changed' : '');
+      b.className = 'ph' + (p.category !== p.first ? ' changed' : '') + (state.picked && state.picked.has(i) ? ' picked' : '');
       b.dataset.index = i;
       b.setAttribute('aria-label', p.name + ', ' + (p.kind === 'video' ? 'video, ' : '') + p.category);
       if (p.thumb) { const img = document.createElement('img'); img.src = p.thumb; img.alt = ''; b.append(img); }
       else { const s = document.createElement('span'); s.className = 'bad'; s.textContent = 'no preview'; b.append(s); }
       if (p.kind === 'video') { const v = document.createElement('span'); v.className = 'vid'; v.textContent = '▶' + (p.duration ? ' ' + fmtDur(p.duration) : ''); b.append(v); }
-      b.addEventListener('click', () => openSheet(i));
+      holdToPick(b, i);
+      b.addEventListener('click', () => {
+        if (held) { held = false; return; }       // the end of a long press, not a tap
+        if (state.picked) pick(i); else openSheet([i]);
+      });
       grid.append(b);
     }
     g.append(head, grid);
@@ -1756,31 +1821,82 @@ function renderReview() {
   const n = toCopy().length;
   $('#btn-copy').textContent = 'Copy ' + n;
   $('#btn-copy').disabled = n === 0;
-  $('#bar-edge').textContent = state.recheck ? 're-check ▸ ' + countText(state.plan) + ' ▸ nothing copied' : countText(state.plan) + ' ▸ ' + (state.plan.length - n) + ' stay';
-  $('#review-cap').textContent = state.recheck ? 'A re-check: nothing will be copied. Copy the run details to compare.' : 'Tap a picture to send it to another folder. Nothing is copied until you tap Copy.';
+  reviewBar();
   $('#review-details-text').textContent = runDetails();
 }
 
-let sheetIndex = -1;
-function openSheet(i) {
-  sheetIndex = i;
-  const p = state.plan[i];
+// The film edge, the caption and the buttons, which change while picking several.
+function reviewBar() {
+  barButtons();
+  if (state.picked) {
+    $('#bar-edge').textContent = countText([...state.picked].map((i) => state.plan[i])) + ' picked';
+    $('#review-cap').textContent = 'Tap more pictures to pick them, or a picked one to leave it out. Send to puts them all in one folder.';
+    return;
+  }
+  const n = toCopy().length;
+  $('#bar-edge').textContent = state.recheck ? 're-check ▸ ' + countText(state.plan) + ' ▸ nothing copied' : countText(state.plan) + ' ▸ ' + (state.plan.length - n) + ' stay';
+  $('#review-cap').textContent = state.recheck ? 'A re-check: nothing will be copied. Copy the run details to compare.'
+    : 'Tap a picture to send it to another folder; press and hold to pick several. Nothing is copied until you tap Copy.';
+}
+
+// Picking several (Gary, 30/10/26): a long press on a picture starts it with that
+// picture; then a tap picks another or leaves a picked one out, and Send to puts
+// them all in one folder. Leaving out the last one, or Cancel, ends it. The tiles
+// are marked in place, not redrawn, so the press that started it ends on the same
+// tile and its click is passed over (held).
+let held = false;
+function holdToPick(b, i) {
+  let timer = 0, x0 = 0, y0 = 0;
+  const stop = () => clearTimeout(timer);
+  b.addEventListener('pointerdown', (e) => {
+    held = false; x0 = e.clientX; y0 = e.clientY; stop();
+    timer = setTimeout(() => {
+      held = true;
+      if (navigator.vibrate) navigator.vibrate(15);
+      pick(i, true);
+    }, config.holdMs);
+  });
+  b.addEventListener('pointermove', (e) => { if (Math.hypot(e.clientX - x0, e.clientY - y0) > 10) stop(); });   // a scroll, not a press
+  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, stop);
+  b.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+function pick(i, on) {
+  if (!state.picked) state.picked = new Set();
+  if (on || !state.picked.has(i)) state.picked.add(i); else state.picked.delete(i);
+  if (!state.picked.size) state.picked = null;
+  for (const t of document.querySelectorAll('#groups .ph')) t.classList.toggle('picked', !!state.picked && state.picked.has(+t.dataset.index));
+  reviewBar();
+}
+function endPicking() { state.picked = null; renderReview(); }
+
+// The sheet: send one picture, or every picked one, to a folder.
+let sheetItems = [];
+function openSheet(list) {
+  sheetItems = list;
+  const p = state.plan[list[0]];
   $('#sheet-img').src = p.thumb || '';
-  $('#sheet-name').textContent = p.name;
-  $('#sheet-why').textContent = 'filter said ' + p.first + ': ' + p.reason;
+  $('#sheet-name').textContent = list.length === 1 ? p.name : countText(list.map((i) => state.plan[i])) + ' picked';
+  $('#sheet-why').textContent = list.length === 1 ? 'filter said ' + p.first + ': ' + p.reason : 'All of them go to the folder you choose.';
   const box = $('#sheet-targets');
   box.replaceChildren();
   for (const c of state.cats) {
     const b = document.createElement('button');
     b.textContent = c === state.stay ? c + ' (stays)' : c;
     b.dataset.category = c;
-    b.setAttribute('aria-pressed', String(p.category === c));
-    b.addEventListener('click', () => { state.plan[sheetIndex].category = c; closeSheet(); renderReview(); });
+    b.setAttribute('aria-pressed', String(list.every((i) => state.plan[i].category === c)));
+    b.addEventListener('click', () => {
+      for (const i of sheetItems) state.plan[i].category = c;
+      state.picked = null;
+      closeSheet();
+      renderReview();
+    });
     box.append(b);
   }
   $('#veil').hidden = false; $('#sheet').hidden = false;
 }
-function closeSheet() { $('#veil').hidden = true; $('#sheet').hidden = true; sheetIndex = -1; }
+function closeSheet() { $('#veil').hidden = true; $('#sheet').hidden = true; sheetItems = []; }
+$('#btn-pick-cancel').addEventListener('click', endPicking);
+$('#btn-pick-send').addEventListener('click', () => { if (state.picked) openSheet([...state.picked].sort((a, b) => a - b)); });
 $('#sheet-cancel').addEventListener('click', closeSheet);
 $('#veil').addEventListener('click', closeSheet);
 
@@ -1893,7 +2009,7 @@ function runDetails() {
     const was = state.wasIn.get(p.name), of = ex && state.exampleOf.get(p.name);
     return p.name + ' ▸ ' + p.category + (p.category !== p.first ? ' (filter said ' + p.first + ')' : '') + ': ' + p.reason +
       (was ? ' [already in ' + was + ']' : '') + (of ? ' [example of ' + of + ']' : '') +
-      (p.frames ? ' [frames: ' + p.frames.map((f) => f.at.toFixed(1) + ' s ' + f.category + ', ' + f.reason).join('; ') + ']' : '');
+      (p.frames ? ' [frames: ' + p.frames.map((f) => f.at.toFixed(1) + ' s' + (f.sure ? '' : ' (frame not confirmed)') + ' ' + f.category + ', ' + f.reason).join('; ') + ']' : '');
   });
   const failed = ex ? state.exampleUse.flatMap((u) => u.failed.map((f) => 'example not used: ' + u.folder + '/' + f)) : [];
   return [head].concat(lines, failed).join('\n');
