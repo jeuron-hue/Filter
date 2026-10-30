@@ -3,7 +3,7 @@
 // What it does, in plain words:
 // 1. On install it downloads the app shell (the page, manifest, icons, fonts)
 //    into a cache, so the app opens with no network at all. MediaPipe and its
-//    models (about 30 MB) go in a second cache named by their pinned version, so
+//    models (about 35 MB) go in a second cache named by their pinned version, so
 //    an app release does not download them again; only a new pin does.
 // 2. On every request for one of our own files it answers from that cache first.
 //    It never touches any other website: requests to other origins are ignored.
@@ -12,11 +12,11 @@
 // in filter.html (filter_checks.cjs fails if they differ). A new version makes
 // the browser install a fresh worker, and the app shows "Update available".
 
-const CACHE_VERSION = '0.1.5';
+const CACHE_VERSION = '0.2.0';
 const CACHE = 'filter-v' + CACHE_VERSION;
 // Must name the @mediapipe/tasks-vision version in the filter.html build notes
 // (filter_checks.cjs enforces it). Change the suffix whenever a file below changes.
-const VENDOR_CACHE = 'filter-mediapipe-0.10.35-3';
+const VENDOR_CACHE = 'filter-mediapipe-0.10.35-4';
 
 const SHELL = [
   './',
@@ -40,6 +40,7 @@ const VENDOR = [
   'vendor/mediapipe/efficientnet_lite0.tflite',
   'vendor/mediapipe/blaze_face_short_range.tflite',
   'vendor/mediapipe/efficientdet_lite0.tflite',
+  'vendor/mediapipe/mobilenet_v3_large.tflite',
 ];
 
 self.addEventListener('install', (event) => {
