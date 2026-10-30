@@ -618,7 +618,7 @@ test('sha256: a big file is hashed a piece at a time and matches Node at every b
   await ctx.close();
 }, { core: true });
 
-test('frameTimes, videoVote and meanVec: frames at 10, 50 and 90 %, more than half decide, frames averaged', async () => {
+test('frameTimes, videoVote and meanVec: frames at 10, 50 and 90 %, frames that see nothing do not vote, frames averaged', async () => {
   const { ctx, page } = await newApp();
   const r = await page.evaluate(() => {
     const c = window.filter.core, at = window.filter.config.frameAt;
@@ -629,8 +629,10 @@ test('frameTimes, videoVote and meanVec: frames at 10, 50 and 90 %, more than ha
       at,
       votes: [
         v([f('people', '1 face, 0.90'), f('pets'), f('people', '2 faces, 0.95')]),
-        v([f('people'), f('other', 'nothing clear'), f('other')]),
+        v([f('other', 'nothing clear'), f('scenery', 'seashore 0.30, scenery 0.64'), f('other')]),
+        v([f('other', 'nothing clear (best guess: golfcart 0.09)'), f('other'), f('other')]),
         v([f('people'), f('pets'), f('food')]),
+        v([f('people'), f('pets'), f('other')]),
         v([f('pets'), f('pets'), f('pets', 'dog 0.80')]),
         v([f('people'), f('pets')]),
         v([f('food', 'pizza 0.70')]),
@@ -644,13 +646,15 @@ test('frameTimes, videoVote and meanVec: frames at 10, 50 and 90 %, more than ha
   eq(r.times, [[2, 10, 18], [], [], [], []], 'times in seconds; none for a video whose length is not a real number');
   eq(r.votes, [
     ['people', '2 of 3 frames people: 1 face, 0.90'],
-    ['other', '2 of 3 frames other: nothing clear'],
+    ['scenery', '1 of 3 frames scenery: seashore 0.30, scenery 0.64'],
+    ['other', 'nothing clear in any frame: nothing clear (best guess: golfcart 0.09)'],
     ['other', 'frames disagree: people, pets, food'],
+    ['other', 'frames disagree: people, pets, other'],
     ['pets', '3 of 3 frames pets: pets why'],
     ['other', 'frames disagree: people, pets'],
     ['food', '1 of 1 frames food: pizza 0.70'],
     ['other', 'no frame could be read'],
-  ], 'votes');
+  ], 'votes: frames that see nothing clear do not vote (Gary\'s scenery videos, 30/10/26)');
   eq(r.stays, 'unsure', 'frames that disagree stay where the run keeps what stays');
   eq(r.mean, [[2, 2, 4], [0.5, -1], []], 'averaged number by number');
   await ctx.close();
@@ -1849,7 +1853,7 @@ test('real models: a video is seen by its frames, by description and by example'
   let r = await page.evaluate(() => window.filter.state.plan.map((p) => [p.category, p.reason, !!p.thumb, (p.frames || []).length]));
   console.log('      real models on a drawn clip: ' + r.map((x) => x[0] + ' (' + x[1] + ')').join('; '));
   eq(r.length, 1, 'the video');
-  assert(r[0][2] && r[0][3] === 3 && /^(\d of 3 frames \w+: |frames disagree: )/.test(r[0][1]), 'three frames recognised and voted on: ' + r[0][1]);
+  assert(r[0][2] && r[0][3] === 3 && /^(\d of 3 frames \w+: |frames disagree: |nothing clear in any frame: )/.test(r[0][1]), 'three frames recognised and voted on: ' + r[0][1]);
   const head = (await page.evaluate(() => window.filter.runDetails())).split('\n')[0];
   assert(/ hrs, 1 video, [\d.]+ s per video, closer look for \d$/.test(head), 'a run of videos only says nothing of photos: ' + head);
   await page.click('#btn-restart'); await page.click('#btn-restart');

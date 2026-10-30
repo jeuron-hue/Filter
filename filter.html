@@ -19,7 +19,7 @@ not copied. Every copy is read back and checked byte for byte (size and SHA-256)
 filter never deletes or overwrites anything, and never writes to filter-examples/.
 Each run writes a log to filter-logs/ in the picked folder.
 
-APP_VERSION 0.3.1 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.3.2 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -76,8 +76,10 @@ change the version here in the same commit as the file.
   0.60 to 0.96 with each other and 0.06 to 0.52 with other patterns.
   Videos (F3) need no new model. Three frames are taken, 10 %, 50 % and 90 % of
   the way through, each decoded like a photo. By description each frame goes
-  through the same models and rules and the folder most frames agree on wins
-  (two of three); frames that all disagree leave the video in other. By example
+  through the same models and rules; a frame that sees nothing clear does not
+  vote, and the folder seen in the most frames wins (one frame of scenery and
+  two of nothing is scenery); a tie, or nothing in any frame, leaves the video
+  in other. By example
   the three frames' numbers are averaged and compared with Gary's example videos
   only (his choice, 30/10/26: a folder with no example videos takes no videos),
   against bars of their own (minSimVideo, minGapVideo). Videos are opened one at
@@ -356,7 +358,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.3.1';
+const APP_VERSION = '0.3.2';
 
 // The folders filter knows, in the order they are shown. Photos and videos in
 // "other" stay where they are: nothing is copied for them.
@@ -939,15 +941,19 @@ core.meanVec = (vecs) => {
 core.frameTimes = (duration, at) => (Number.isFinite(duration) && duration > 0 ? at.map((k) => k * duration) : []);
 
 // A video by description: each frame read went through the rules on its own;
-// frames: [{ category, reason }]. The folder more than half the frames agree on
-// wins (two of three), with the first such frame's reason; otherwise the video
-// stays (in other), and the reason lists what each frame said.
+// frames: [{ category, reason }]. A frame in `stay` (other) saw nothing clear, so
+// it does not vote: the folder seen in the most of the other frames wins, with
+// the first such frame's reason (Gary, 30/10/26: two videos of scenery all
+// through had one frame seen as scenery and two as nothing clear). Two folders
+// seen in as many frames, or nothing clear in any frame, and the video stays.
 core.videoVote = (frames, stay = STAY) => {
   if (!frames.length) return { category: stay, reason: 'no frame could be read' };
   const n = {};
-  for (const f of frames) n[f.category] = (n[f.category] || 0) + 1;
-  const top = Object.keys(n).sort((a, b) => n[b] - n[a])[0];
-  if (2 * n[top] <= frames.length) return { category: stay, reason: 'frames disagree: ' + frames.map((f) => f.category).join(', ') };
+  for (const f of frames) if (f.category !== stay) n[f.category] = (n[f.category] || 0) + 1;
+  const ranked = Object.keys(n).sort((a, b) => n[b] - n[a]);
+  if (!ranked.length) return { category: stay, reason: 'nothing clear in any frame: ' + frames[0].reason };
+  if (ranked.length > 1 && n[ranked[1]] === n[ranked[0]]) return { category: stay, reason: 'frames disagree: ' + frames.map((f) => f.category).join(', ') };
+  const top = ranked[0];
   return { category: top, reason: n[top] + ' of ' + frames.length + ' frames ' + top + ': ' + frames.find((f) => f.category === top).reason };
 };
 
