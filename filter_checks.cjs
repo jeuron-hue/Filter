@@ -14,7 +14,8 @@
 //     log, never filter-examples/ (Gary's examples are read only)
 //   - the sorting rules' label names match the labels inside the two models
 //   - every image in the repo carries no EXIF, XMP, IPTC, GPS or text chunks
-//   - CHANGELOG.md has an entry for this version, newest first
+//   - CHANGELOG.md: every heading gives version, release date and time; the newest is
+//     APP_VERSION; newest first; each entry has a change line
 //
 // Run: node filter_checks.cjs
 // Pattern and metadata parser from retouch_checks.cjs (jeuron-hue/retouch).
@@ -27,6 +28,40 @@ const crypto = require('crypto');
 const ROOT = __dirname;
 const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 const exists = (f) => fs.existsSync(path.join(ROOT, f));
+
+// CHANGELOG.md (versioning rule, 30/10/26).
+// Every heading is "## <version>, dd/mm/yy HHMM hrs" with an optional ", <label>"; the
+// version is vX.Y.Z, a legacy vN, or Brief. Newest first: the top entry is the current
+// APP_VERSION, x.y.z versions strictly fall, times never rise going down, and every entry
+// has at least one "- " change line.
+function changelogProblems(text, appVersion) {
+  const probs = [];
+  const heads = [];
+  const lines = text.split('\n');
+  lines.forEach((l, i) => { if (l.startsWith('## ')) heads.push(i); });
+  if (!heads.length) return ['no entries'];
+  const cmp = (a, b) => { for (let k = 0; k < 3; k++) if (a[k] !== b[k]) return a[k] - b[k]; return 0; };
+  let prevVer = null, prevStamp = null;
+  heads.forEach((h, n) => {
+    const m = lines[h].match(/^## (v\d+\.\d+\.\d+|v\d+|Brief), (\d\d)\/(\d\d)\/(\d\d) (\d\d)(\d\d) hrs(, .+)?$/);
+    if (!m) { probs.push(`heading not "## vX.Y.Z, dd/mm/yy HHMM hrs": ${lines[h]}`); return; }
+    const [, label, dd, mo, yy, hh, mi] = m;
+    if (+dd < 1 || +dd > 31 || +mo < 1 || +mo > 12 || +hh > 23 || +mi > 59) probs.push(`bad date or time: ${lines[h]}`);
+    if (n === 0 && label !== 'v' + appVersion) probs.push(`newest entry ${label} is not the current version v${appVersion}`);
+    const stamp = yy + mo + dd + hh + mi;
+    if (prevStamp && stamp > prevStamp) probs.push(`${label} is later than the entry above it`);
+    prevStamp = stamp;
+    const xyz = label.match(/^v(\d+)\.(\d+)\.(\d+)$/);
+    if (xyz) {
+      const v = xyz.slice(1).map(Number);
+      if (prevVer && cmp(v, prevVer) >= 0) probs.push(`${label} is not below the version above it`);
+      prevVer = v;
+    }
+    const body = lines.slice(h + 1, heads[n + 1] ?? lines.length);
+    if (!body.some((l) => l.startsWith('- '))) probs.push(`${label} has no "- " change line`);
+  });
+  return probs;
+}
 
 // App source: the files the browser runs.
 const APP_SOURCE = ['filter.html', 'index.html', 'sw.js', 'manifest.webmanifest'];
@@ -444,14 +479,11 @@ function runChecks() {
 
   // Every release adds its entry to CHANGELOG.md in the same commit as the
   // version bump: the newest entry must be the version the app says it is.
-  check('CHANGELOG.md: newest entry is APP_VERSION, entries newest first', () => {
+  check('CHANGELOG.md: version, release date and time, change; newest first', () => {
     const app = (read('filter.html').match(/const APP_VERSION = '([^']+)'/) || [])[1];
-    const vs = Array.from(read('CHANGELOG.md').matchAll(/^## v(\d+)\.(\d+)\.(\d+), \d\d\/\d\d\/\d\d, F\d\b/gm)).map((m) => m.slice(1, 4).map(Number));
-    assert(vs.length, 'no entries headed "## vX.Y.Z, dd/mm/yy, F<n>"');
-    assert(vs[0].join('.') === app, 'newest entry is v' + vs[0].join('.') + ' but APP_VERSION is ' + app);
-    const before = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
-    for (let i = 1; i < vs.length; i++) assert(before(vs[i - 1], vs[i]) > 0, 'v' + vs[i - 1].join('.') + ' is not newer than v' + vs[i].join('.'));
-    return vs.length + ' versions';
+    const probs = changelogProblems(read('CHANGELOG.md'), app);
+    assert(!probs.length, probs.join('; '));
+    return (read('CHANGELOG.md').match(/^## /gm) || []).length + ' entries';
   });
 
   check('manifest: standalone, relative start, icons', () => {
