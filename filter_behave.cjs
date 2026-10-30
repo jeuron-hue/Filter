@@ -11,11 +11,14 @@
 // through the browser's own file code. Wrappers on top of it plant faults: a
 // disk that changes a byte, a short write, a write that fails part way, a
 // listing that stalls. Every picture is synthetic (coloured shapes, a page of
-// text, screen-sized PNGs, planted camera data and previews); no real photo is
-// used. The models are swapped for a stand-in that answers by file name, so
-// where each photo lands can be checked exactly; by example (F2), the stand-in
-// embedder turns each picture into its colour, so the closest folder is plain
-// arithmetic. Two tests run the real models.
+// text, screen-sized PNGs, planted camera data and previews, short WebM clips
+// recorded in the page from a canvas); no real photo or video is used. The
+// models are swapped for a stand-in that answers by file name, so where each
+// photo lands can be checked exactly; a clip's frames are told apart by their
+// colour (each clip is three flat thirds, so the frames at 10 %, 50 % and 90 %
+// fall one in each). By example (F2), the stand-in embedder turns each picture
+// into its colour, so the closest folder is plain arithmetic. Three tests run
+// the real models.
 //
 // Run:            node filter_behave.cjs
 // Core only:      FILTER_ONLY=core node filter_behave.cjs   (used by filter_mutate.sh)
@@ -124,6 +127,32 @@ function pageFixtures() {
       }
       return c.convertToBlob({ type, quality: 0.9 });
     },
+    // A short WebM clip recorded from a canvas: one third per segment, each a flat
+    // colour or { pattern, hue, seed } (a drawn pattern). Recording runs in real
+    // time, so the Node side keeps each clip it has made (clipBytes) for later tests.
+    async clip(segments, { w = 320, h = 240, ms = 1200 } = {}) {
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const x = c.getContext('2d');
+      const looks = [];
+      for (const sg of segments) looks.push(typeof sg === 'string' ? sg : await createImageBitmap(await this.pattern(sg.pattern, sg.hue, sg.seed)));
+      const rec = new MediaRecorder(c.captureStream(30), { mimeType: 'video/webm;codecs=vp8' });
+      const parts = [];
+      rec.ondataavailable = (e) => parts.push(e.data);
+      const t0 = performance.now();
+      rec.start();
+      await new Promise((done) => {
+        const draw = () => {
+          const t = performance.now() - t0, k = Math.min(looks.length - 1, Math.floor(t / (ms / looks.length)));
+          if (typeof looks[k] === 'string') { x.fillStyle = looks[k]; x.fillRect(0, 0, w, h); } else x.drawImage(looks[k], 0, 0, w, h);
+          if (t < ms) requestAnimationFrame(draw); else done();
+        };
+        draw();
+      });
+      await new Promise((done) => { rec.onstop = done; rec.stop(); });
+      return new Uint8Array(await new Blob(parts).arrayBuffer());
+    },
+    b64(bytes) { let s = ''; for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192)); return btoa(s); },
+    unb64(s) { return Uint8Array.from(atob(s), (ch) => ch.charCodeAt(0)); },
     // A page of black text on white.
     async textPage(w = 600, h = 800) {
       const c = new OffscreenCanvas(w, h);
@@ -171,7 +200,7 @@ function pageFixtures() {
     },
     // The standard fake camera folder. Photo names carry dates, newest first;
     // what the stand-in models "see" in each is in __answers.
-    async camera() {
+    async camera(clips) {
       const cam = await this.dir('DCIM/Camera');
       const A = window.__answers = {};
       const photo = async (name, i, answer, opts = {}) => {
@@ -205,7 +234,14 @@ function pageFixtures() {
       await photo('PXL_20261029_100200000.jpg', 6, { objects: [{ name: 'person', score: 0.94, x: 0.03, y: 0, w: 0.94, h: 1 }],
         labels: [{ index: 834, name: 'suit', score: 0.6 }, { index: 906, name: 'Windsor tie', score: 0.1 }] });
       await photo('PXL_20250101_120000000.jpg', 7, { objects: [{ name: 'cat', score: 0.8, w: 0.5, h: 0.4 }], labels: [{ index: 600, name: 'hook', score: 0.2 }] });
-      for (let i = 0; i < 2; i++) await this.put(cam, 'PXL_20261029_11' + i + '000000.mp4', this.noise(3000 + i, i + 7));
+      // Videos, older than the photos above (so tests taking the newest few get photos)
+      // and newer than the cat. The stand-in sees a face in red frames, a dog in blue
+      // ones and nothing in green: red, red, blue is people (two frames of three);
+      // red, green, blue disagree and stays in other; noise named .mp4 cannot be played.
+      await this.put(cam, 'PXL_20261029_095200000.webm', this.unb64(clips.rrb));
+      await this.put(cam, 'PXL_20261029_095100000.webm', this.unb64(clips.rgb));
+      await this.put(cam, 'PXL_20261029_095000000.mp4', this.noise(3000, 7));
+      A['PXL_20261029_095200000.webm'] = A['PXL_20261029_095100000.webm'] = { frames: this.FRAMES };
       await this.put(cam, '.trashed-1767225600-PXL_20261001_090000000.jpg', await this.picture(9));
       await this.put(cam, 'notes.txt', new TextEncoder().encode('not a photo'));
       return cam;
@@ -246,6 +282,13 @@ function pageFixtures() {
       await this.put(cam, 'PXL_20261030_100100000.jpg', same);
       await this.put(red, 'PXL_20261030_100100000.jpg', same);
       return cam;
+    },
+    // What the stand-in sees in a clip's frames, by the frame's colour.
+    FRAMES: { red: { faces: [{ w: 0.3, h: 0.3, score: 0.9 }] }, blue: { objects: [{ name: 'dog', score: 0.8, w: 0.5, h: 0.5 }] }, green: {} },
+    // The colour a picture is mostly: red, green, blue, or grey when it has none.
+    colourName(bmp) {
+      const v = this.colourVec(bmp), k = v.indexOf(Math.max(...v));
+      return v[k] > 20 ? ['red', 'green', 'blue'][k] : 'grey';
     },
     // A picture's average colour less its grey level: the stand-in embedder.
     colourVec(bmp) {
@@ -331,6 +374,12 @@ function pageFixtures() {
       return { w: img.naturalWidth, h: img.naturalHeight, centre: Array.from(x.getImageData(img.naturalWidth >> 1, img.naturalHeight >> 1, 1, 1).data) };
     },
   };
+  // The stand-in models: the answer planted for the file's name; for a clip, the
+  // answer for the colour of the frame being looked at.
+  window.__standIn = (e, bmp) => {
+    const a = (window.__answers || {})[e.name] || {};
+    return a.frames ? a.frames[window.__fx.colourName(bmp)] || {} : a;
+  };
   window.showDirectoryPicker = async () => {
     if (!window.__pick) throw new DOMException('The user aborted a request.', 'AbortError');
     return window.__pick;
@@ -377,7 +426,7 @@ async function newApp({ sw = false, persistent = false, models = 'stand-in', cli
 // Wait for the app to start; swap in the stand-in models unless the test wants the real ones.
 const ready = async (page) => {
   await page.evaluate(() => window.filterReady);
-  if (page.models === 'stand-in') await page.evaluate(() => { window.filter.recog.override = (e) => (window.__answers || {})[e.name] || {}; });
+  if (page.models === 'stand-in') await page.evaluate(() => { window.filter.recog.override = window.__standIn; });
 };
 const idle = (page) => page.waitForFunction(() => window.filter && !window.filter.state.busy, null, { timeout: 120000 });
 async function run(page, button) { await page.click(button); await idle(page); }
@@ -390,12 +439,22 @@ const plan = (page) => page.evaluate(() => {
   for (const p of window.filter.state.plan) (out[p.category] = out[p.category] || []).push(p.name);
   return out;
 });
+// Clips are recorded in real time, so each is made once per suite run and kept
+// here as base64, keyed by its segments; later pages get the same bytes.
+const clipCache = new Map();
+async function clipBytes(page, segments, opts = {}) {
+  const key = JSON.stringify([segments, opts]);
+  if (!clipCache.has(key)) clipCache.set(key, await page.evaluate(async ([sg, o]) => window.__fx.b64(await window.__fx.clip(sg, o)), [segments, opts]));
+  return clipCache.get(key);
+}
+const RED = '#ff0000', GREEN = '#00ff00', BLUE = '#0000ff';
 // Seed the standard camera folder and pick it. sub: faults for filter's subfolders.
 async function openCamera(page, sub = null) {
-  await page.evaluate(async (sub) => {
-    const cam = await window.__fx.camera();
+  const clips = { rrb: await clipBytes(page, [RED, RED, BLUE]), rgb: await clipBytes(page, [RED, GREEN, BLUE]) };
+  await page.evaluate(async ([sub, clips]) => {
+    const cam = await window.__fx.camera(clips);
     window.__pick = sub ? window.__fx.wrap(cam, null, [], cam.name, sub) : cam;
-  }, sub);
+  }, [sub, clips]);
   await run(page, '#btn-pick');
 }
 async function sort(page, n) {
@@ -409,12 +468,12 @@ const filesIn = (tree, dir) => Object.keys(tree).filter((k) => k.startsWith(dir 
 const readLog = (page, name) => page.evaluate(async (n) => JSON.parse(await (await (await (await window.__fx.dir('DCIM/Camera/filter-logs')).getFileHandle(n)).getFile()).text()), name);
 
 const EXPECTED_PLAN = {
-  people: ['PXL_20261029_101000000.jpg', 'PXL_20261029_100200000.jpg'],
+  people: ['PXL_20261029_101000000.jpg', 'PXL_20261029_100200000.jpg', 'PXL_20261029_095200000.webm'],
   pets: ['PXL_20261029_100900000.jpg', 'PXL_20250101_120000000.jpg'],
   food: ['PXL_20261029_100800000.jpg'],
   scenery: ['PXL_20261029_100700000.jpg'],
   documents: ['PXL_20261029_100600000.jpg'],
-  other: ['PXL_20261029_100500000.jpg'],
+  other: ['PXL_20261029_100500000.jpg', 'PXL_20261029_095100000.webm', 'PXL_20261029_095000000.mp4'],
   screenshots: ['Screenshot_20261029-100400.png', 'IMG_20261029_100300.png'],
 };
 const sortPlan = (p) => Object.fromEntries(Object.keys(p).sort().map((k) => [k, p[k].slice().sort()]));
@@ -516,6 +575,84 @@ test('sha256 matches Node for a known string and for random bytes; exists sees f
   for (let i = 0; i < b.length; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; b[i] = x & 255; }
   eq(r.noise, sha(b), 'sha256 of 100 kB of noise');
   eq(r.exists, [true, false, true], 'exists');
+  await ctx.close();
+}, { core: true });
+
+test('sha256: a big file is hashed a piece at a time and matches Node at every block edge, whatever the pieces', async () => {
+  const { ctx, page } = await newApp();
+  const sizes = [1, 3, 55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 129, 1000003];
+  const r = await page.evaluate(async (sizes) => {
+    const c = window.filter.core, fx = window.__fx;
+    const out = {};
+    for (const n of sizes) {
+      const b = fx.noise(n, n + 3), blob = new Blob([b]);
+      const got = [];
+      for (const piece of n > 1000 ? [65537, 1048576] : [1, 7, 63, 64, 65, 1000]) got.push(await c.sha256(blob, 0, piece));
+      // Fed straight to the stream in uneven parts: 1, 2, 3, ... bytes.
+      const h = c.sha256Stream();
+      for (let at = 0, k = 1; at < n; at += k, k++) h.update(b.subarray(at, at + k));
+      got.push(h.hex());
+      out[n] = got;
+    }
+    const empty = c.sha256Stream(); empty.update(new Uint8Array(0));
+    // A file too big to read whole: arrayBuffer() on the file itself refuses, as a 2 GB
+    // video would on the phone; only its pieces can be read.
+    const real = new Blob([fx.noise(5000, 77)]);
+    const huge = { size: real.size, slice: (a, z) => real.slice(a, z), arrayBuffer: () => Promise.reject(new RangeError('too big to read whole')) };
+    let whole = 'read';
+    try { await c.sha256(huge, 10000); } catch (e) { whole = e.name; }
+    return { out, empty: empty.hex(), huge: await c.sha256(huge, 4999, 999), whole, defaults: [c.HASH_WHOLE, c.HASH_PIECE] };
+  }, sizes);
+  for (const n of sizes) {
+    const b = Buffer.alloc(n); let x = n + 3;
+    for (let i = 0; i < n; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; b[i] = x & 255; }
+    const want = sha(b);
+    r.out[n].forEach((got, k) => eq(got, want, n + ' bytes, way ' + k));
+  }
+  eq(r.empty, 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 'the stream on nothing');
+  const hb = Buffer.alloc(5000); let y = 77;
+  for (let i = 0; i < 5000; i++) { y ^= y << 13; y ^= y >>> 17; y ^= y << 5; hb[i] = y & 255; }
+  eq(r.huge, sha(hb), 'a file over the limit is never read whole');
+  eq(r.whole, 'RangeError', 'under the limit it is read whole (so the test above means something)');
+  eq(r.defaults, [64 * 1048576, 4 * 1048576], 'photos (up to 64 MB) hashed whole, bigger files in 4 MB pieces');
+  await ctx.close();
+}, { core: true });
+
+test('frameTimes, videoVote and meanVec: frames at 10, 50 and 90 %, more than half decide, frames averaged', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const c = window.filter.core, at = window.filter.config.frameAt;
+    const f = (category, reason = category + ' why') => ({ category, reason });
+    const v = (list) => { const x = c.videoVote(list); return [x.category, x.reason]; };
+    return {
+      times: [c.frameTimes(20, at), c.frameTimes(0, at), c.frameTimes(NaN, at), c.frameTimes(Infinity, at), c.frameTimes(-3, at)],
+      at,
+      votes: [
+        v([f('people', '1 face, 0.90'), f('pets'), f('people', '2 faces, 0.95')]),
+        v([f('people'), f('other', 'nothing clear'), f('other')]),
+        v([f('people'), f('pets'), f('food')]),
+        v([f('pets'), f('pets'), f('pets', 'dog 0.80')]),
+        v([f('people'), f('pets')]),
+        v([f('food', 'pizza 0.70')]),
+        v([]),
+      ],
+      stays: c.videoVote([f('a'), f('b'), f('c')], 'unsure').category,
+      mean: [c.meanVec([[1, 2, 3], [3, 2, 1], [2, 2, 8]]), c.meanVec([[0.5, -1]]), c.meanVec([])],
+    };
+  });
+  eq(r.at, [0.1, 0.5, 0.9], 'frames at 10, 50 and 90 % through');
+  eq(r.times, [[2, 10, 18], [], [], [], []], 'times in seconds; none for a video whose length is not a real number');
+  eq(r.votes, [
+    ['people', '2 of 3 frames people: 1 face, 0.90'],
+    ['other', '2 of 3 frames other: nothing clear'],
+    ['other', 'frames disagree: people, pets, food'],
+    ['pets', '3 of 3 frames pets: pets why'],
+    ['other', 'frames disagree: people, pets'],
+    ['food', '1 of 1 frames food: pizza 0.70'],
+    ['other', 'no frame could be read'],
+  ], 'votes');
+  eq(r.stays, 'unsure', 'frames that disagree stay where the run keeps what stays');
+  eq(r.mean, [[2, 2, 4], [0.5, -1], []], 'averaged number by number');
   await ctx.close();
 }, { core: true });
 
@@ -909,8 +1046,8 @@ test('exampleProblem keeps filter\'s own names and hidden folders out; leastSure
 
 // Runs core.safeCopy in the page on a fresh A -> A/to pair holding one file of
 // random bytes. fault names a fault for the target folder.
-async function copyCase(page, { size = 300000, fault = null, existing = false, clash = false, missing = false } = {}) {
-  return page.evaluate(async ({ size, fault, existing, clash, missing }) => {
+async function copyCase(page, { size = 300000, fault = null, existing = false, clash = false, missing = false, hashWhole, hashPiece } = {}) {
+  return page.evaluate(async ({ size, fault, existing, clash, missing, hashWhole, hashPiece }) => {
     const fx = window.__fx, c = window.filter.core;
     const tag = 'C' + Math.random().toString(36).slice(2, 8);
     const from = await fx.dir(tag), to = await fx.dir(tag + '/to');
@@ -923,7 +1060,7 @@ async function copyCase(page, { size = 300000, fault = null, existing = false, c
     const before = { from: await fx.tree(from), to: await fx.tree(to) };
     const ops = [], steps = [];
     const t = fx.wrap(to, fault, ops, 'to');
-    const log = await c.safeCopy(src, name, t, { existing: new Set(existing ? [name] : []), onStep: (s) => steps.push(s) });
+    const log = await c.safeCopy(src, name, t, { existing: new Set(existing ? [name] : []), onStep: (s) => steps.push(s), hashWhole, hashPiece });
     return {
       log, ops, steps, before, name,
       srcSha: await fx.sha(new Blob([bytes])),
@@ -932,7 +1069,7 @@ async function copyCase(page, { size = 300000, fault = null, existing = false, c
       toSize: (await fx.has(to, name)) ? (await (await to.getFileHandle(name)).getFile()).size : null,
       after: { from: await fx.tree(from), to: await fx.tree(to) },
     };
-  }, { size, fault, existing, clash, missing });
+  }, { size, fault, existing, clash, missing, hashWhole, hashPiece });
 }
 
 test('safe copy: copies, reads the copy back, checks size and SHA-256, leaves the original as it was', async () => {
@@ -948,6 +1085,16 @@ test('safe copy: copies, reads the copy back, checks size and SHA-256, leaves th
   eq(r.steps, ['read original', 'check target', 'copy', 'read back', 'compare', 'done'], 'each step reported as it starts');
   assert(!L.reason, 'no reason on success: ' + L.reason);
   for (const k of ['hash', 'copy', 'readBack']) assert(typeof L.ms[k] === 'number' && L.ms[k] >= 0, 'time for ' + k);
+  await ctx.close();
+}, { core: true });
+
+test('safe copy: a big file (a video) is hashed a piece at a time, and a changed byte is still caught', async () => {
+  const { ctx, page } = await newApp();
+  const ok = await copyCase(page, { hashWhole: 1000, hashPiece: 4099 });
+  eq([ok.log.ok, ok.log.step, ok.log.sha256, ok.log.copySha256], [true, 'done', ok.srcSha, ok.srcSha], 'copied and checked, the same hash as the browser\'s');
+  const bad = await copyCase(page, { fault: 'flip', hashWhole: 1000, hashPiece: 4099 });
+  eq([bad.log.ok, bad.log.step, bad.log.reason], [false, 'compare', 'SHA-256 differs'], 'one changed byte caught');
+  eq(bad.fromSha, bad.srcSha, 'original unchanged');
   await ctx.close();
 }, { core: true });
 
@@ -1037,10 +1184,12 @@ test('setup: picking the camera folder lists it and counts what is new', async (
   await openCamera(page);
   eq(await screen(page), 'setup', 'screen');
   const r = await rowsOf(page, '#setup-rows');
-  assert(/^14 in [\d.]+ s$/.test(r.Entries), 'entries: ' + r.Entries);
-  eq([r.Photos, r['Already sorted'], r['Not yet sorted']], ['10', '0', '10'], 'counts (videos, hidden files and text left out)');
-  const st = await page.evaluate(() => [document.querySelector('#newest').value, document.querySelector('#btn-sort').disabled, document.querySelector('#status').textContent]);
-  eq(st, ['10', false, 'folder ▸ Camera'], 'newest set to what is there, sort enabled');
+  assert(/^15 in [\d.]+ s$/.test(r.Entries), 'entries: ' + r.Entries);
+  eq([r.Photos, r.Videos, r['Already sorted'], r['Not yet sorted']], ['10', '3', '0', '13'], 'counts (hidden files and text left out)');
+  const st = await page.evaluate(() => [document.querySelector('#newest').value, document.querySelector('#btn-sort').disabled, document.querySelector('#btn-sort').textContent,
+    document.querySelector('#status').textContent, document.querySelector('label[for="newest"]').textContent, document.querySelector('#by-cap').textContent]);
+  eq(st, ['13', false, 'Sort', 'folder ▸ Camera', 'Newest photos and videos to sort',
+    'Each photo goes to the folder filter knows that fits what is in it; each video by three of its frames. By example needs a filter-examples/ folder here.'], 'newest set to what is there, photos and videos together');
   await ctx.close();
 });
 
@@ -1049,7 +1198,7 @@ test('run and review: each photo lands in the right folder, grid per folder, oth
   await openCamera(page);
   await page.evaluate(() => {
     window.__calls = {};
-    window.filter.recog.override = (e) => { window.__calls[e.name] = (window.__calls[e.name] || 0) + 1; return window.__answers[e.name] || {}; };
+    window.filter.recog.override = (e, b) => { window.__calls[e.name] = (window.__calls[e.name] || 0) + 1; return window.__standIn(e, b); };
   });
   await sort(page);
   const calls = await page.evaluate(() => [window.__calls, window.filter.state.lastRun.closer]);
@@ -1057,21 +1206,30 @@ test('run and review: each photo lands in the right folder, grid per folder, oth
   eq(twice, ['PXL_20250101_120000000.jpg', 'PXL_20261029_100600000.jpg', 'PXL_20261029_100700000.jpg',
     'PXL_20261029_100800000.jpg', 'PXL_20261029_100900000.jpg', 'PXL_20261029_101000000.jpg'], 'closer look for everything not already people or a screenshot');
   eq([calls[0]['PXL_20261029_100200000.jpg'], calls[0]['Screenshot_20261029-100400.png'], calls[0]['IMG_20261029_100300.png'], calls[0]['PXL_20261029_100500000.jpg'], calls[1]],
-    [1, 1, 1, 1, 6], 'people, screenshots and close-ups (a person filling the frame) skip it');
+    [1, 1, 1, 1, 9], 'people, screenshots and close-ups (a person filling the frame) skip it');
+  eq([calls[0]['PXL_20261029_095200000.webm'], calls[0]['PXL_20261029_095100000.webm'], calls[0]['PXL_20261029_095000000.mp4']], [4, 5, undefined],
+    'a video\'s three frames each looked at, with a closer look for the frames that are not people; a video that cannot be played not at all');
   eq(await screen(page), 'review', 'screen');
   eq(sortPlan(await plan(page)), sortPlan(EXPECTED_PLAN), 'plan');
   const r = await page.evaluate(() => ({
     heads: [...document.querySelectorAll('.group-head')].map((h) => h.textContent),
     thumbs: [...document.querySelectorAll('.ph img')].map((i) => i.src.slice(0, 5)),
+    tags: [...document.querySelectorAll('.ph')].filter((b) => b.querySelector('.vid')).map((b) => [window.filter.state.plan[b.dataset.index].name, b.querySelector('.vid').textContent, !!b.querySelector('img')]),
+    labels: [...document.querySelectorAll('.group[data-category="people"] .ph')].map((b) => b.getAttribute('aria-label')),
     copy: [document.querySelector('#btn-copy').textContent, document.querySelector('#btn-copy').hidden],
     edge: document.querySelector('#bar-edge').textContent,
     reasons: Object.fromEntries(window.filter.state.plan.map((p) => [p.name, p.reason])),
     overflow: document.documentElement.scrollWidth > window.innerWidth,
   }));
-  eq(r.heads, ['people ▸ 2', 'pets ▸ 2', 'food ▸ 1', 'screenshots ▸ 2', 'documents ▸ 1', 'scenery ▸ 1', 'other ▸ 1stay here, not copied'], 'groups in order');
-  assert(r.thumbs.length === 10 && r.thumbs.every((s) => s === 'blob:'), 'a thumbnail for every photo');
-  eq(r.copy, ['Copy 9', false], 'copy button');
-  eq(r.edge, '10 photos ▸ 1 stay', 'film edge');
+  eq(r.heads, ['people ▸ 3', 'pets ▸ 2', 'food ▸ 1', 'screenshots ▸ 2', 'documents ▸ 1', 'scenery ▸ 1', 'other ▸ 3stay here, not copied'], 'groups in order');
+  assert(r.thumbs.length === 12 && r.thumbs.every((s) => s === 'blob:'), 'a thumbnail for every photo and every video that plays: ' + r.thumbs.length);
+  eq(r.tags, [['PXL_20261029_095200000.webm', '▶ 0:01', true], ['PXL_20261029_095100000.webm', '▶ 0:01', true], ['PXL_20261029_095000000.mp4', '▶', false]], 'videos tagged with their length');
+  eq(r.labels[2], 'PXL_20261029_095200000.webm, video, people', 'a video says so to a screen reader');
+  eq(r.copy, ['Copy 10', false], 'copy button');
+  eq(r.edge, '10 photos, 3 videos ▸ 3 stay', 'film edge');
+  eq(r.reasons['PXL_20261029_095200000.webm'], '2 of 3 frames people: 1 face, 0.90', 'a video: two frames of three see a face');
+  eq(r.reasons['PXL_20261029_095100000.webm'], 'frames disagree: people, other, pets', 'a video whose frames disagree stays');
+  assert(/^could not open: Error: cannot play it/.test(r.reasons['PXL_20261029_095000000.mp4']), 'a video that cannot be played stays: ' + r.reasons['PXL_20261029_095000000.mp4']);
   eq(r.reasons['PXL_20261029_100900000.jpg'], 'golden retriever 0.40, pets 0.60', 'reason kept for the sheet');
   eq(r.reasons['IMG_20261029_100300.png'], 'screen-sized picture with no camera data', 'screenshot by shape');
   eq(r.reasons['PXL_20261029_100600000.jpg'], 'mostly text', 'text page found by the real text check');
@@ -1103,9 +1261,9 @@ test('review: tapping a photo and choosing a folder sends it there, marked in am
   await page.click('#sheet-targets button[data-category="food"]');
   const p = await plan(page);
   eq(p.food.slice().sort(), ['PXL_20261029_100500000.jpg', 'PXL_20261029_100800000.jpg'], 'moved to food');
-  eq(p.other, undefined, 'other now empty');
+  eq(p.other, ['PXL_20261029_095100000.webm', 'PXL_20261029_095000000.mp4'], 'only the videos left in other');
   const r = await page.evaluate(() => ({ changed: document.querySelectorAll('.ph.changed').length, copy: document.querySelector('#btn-copy').textContent, sheet: document.querySelector('#sheet').hidden }));
-  eq(r, { changed: 1, copy: 'Copy 10', sheet: true }, 'marked, counted, sheet closed');
+  eq(r, { changed: 1, copy: 'Copy 11', sheet: true }, 'marked, counted, sheet closed');
   await page.click('.group[data-category="pets"] .ph');
   await page.click('#sheet-cancel');
   eq((await plan(page)).pets.length, 2, 'cancel changes nothing');
@@ -1134,27 +1292,33 @@ test('copy: every copy lands in its folder byte-identical, originals untouched, 
   assert(logs.length === 1 && /^run-\d{6}-\d{6}\.json$/.test(logs[0]), 'one log: ' + logs.join(', '));
   const log = await readLog(page, logs[0]);
   eq([log.app, log.version, log.mode, log.folder], ['filter', VERSION, 'copy', 'Camera'], 'log header');
-  eq(log.result, { copied: 8, skipped: 0, stayed: 2, stopped: null }, 'log result');
-  eq(log.items.length, 8, 'one line per copy');
-  eq(log.decisions.length, 10, 'every decision logged, copied or not');
-  eq(log.decisions.find((x) => x.name === 'PXL_20261029_100900000.jpg'), { name: 'PXL_20261029_100900000.jpg', folder: 'other', suggested: 'pets', reason: 'golden retriever 0.40, pets 0.60' }, 'a changed decision');
+  eq(log.result, { copied: 9, skipped: 0, stayed: 4, stopped: null }, 'log result');
+  eq(log.items.length, 9, 'one line per copy');
+  eq(log.decisions.length, 13, 'every decision logged, copied or not');
+  eq(log.decisions.find((x) => x.name === 'PXL_20261029_100900000.jpg'), { name: 'PXL_20261029_100900000.jpg', kind: 'photo', folder: 'other', suggested: 'pets', reason: 'golden retriever 0.40, pets 0.60' }, 'a changed decision');
+  eq(log.items.find((x) => x.name === 'PXL_20261029_095200000.webm').kind, 'video', 'a copied video logged as one');
+  const vd = log.decisions.find((x) => x.name === 'PXL_20261029_095100000.webm');
+  eq([vd.kind, vd.folder, vd.frames.map((f) => f.category)], ['video', 'other', ['people', 'other', 'pets']], 'what each frame said is logged');
+  assert(vd.frames.every((f, i) => Math.abs(f.at - [0.1, 0.5, 0.9][i] * vd.frames[2].at / 0.9) < 0.01) && vd.frames[2].at > 1, 'frames at 10, 50 and 90 % of the length: ' + vd.frames.map((f) => f.at).join(', '));
   for (const it of log.items) {
     eq([it.ok, it.sha256, it.copySha256, it.from], [true, before[it.name], before[it.name], '.'], it.name + ' logged with its hashes');
     assert(want[it.to].includes(it.name), it.name + ' logged in the right folder');
   }
   const d = await rowsOf(page, '#done-rows');
-  eq(d.Copied, '8 of 8, each read back and checked (size and SHA-256)', 'done: copied');
-  eq([d['Already there'], d.Stayed, d['You changed'], d.Log], ['0', '2 in other, not copied', '1 of 10', 'filter-logs/' + logs[0]], 'done rows');
+  eq(d.Copied, '9 of 9, each read back and checked (size and SHA-256)', 'done: copied');
+  eq([d['Already there'], d.Stayed, d['You changed'], d.Log], ['0', '4 in other, not copied', '1 of 13', 'filter-logs/' + logs[0]], 'done rows');
+  assert(/^[\d.]+ s per photo, [\d.]+ s per video, closer look for 9 of 16 looks$/.test(d.Recognition), 'recognition row: ' + d.Recognition);
   eq(await text(page, '#done-title'), 'Done', 'title');
   await page.click('#btn-details');
   await page.waitForSelector('#notice:not([hidden])');
   const clip = await page.evaluate(() => navigator.clipboard.readText());
   const lines = clip.split('\n');
-  assert(new RegExp('^filter v' + VERSION.replace(/\./g, '\\.') + ' run \\d\\d/\\d\\d/\\d\\d \\d{4} hrs, 10 photos, ').test(lines[0]), 'details header: ' + lines[0]);
-  eq(lines.length, 11, 'a line per photo');
+  assert(new RegExp('^filter v' + VERSION.replace(/\./g, '\\.') + ' run \\d\\d/\\d\\d/\\d\\d \\d{4} hrs, 10 photos, 3 videos, [\\d.]+ s per photo, [\\d.]+ s per video, ').test(lines[0]), 'details header: ' + lines[0]);
+  eq(lines.length, 14, 'a line per photo and video');
+  assert(lines.some((l) => /^PXL_20261029_095100000\.webm ▸ other: frames disagree: people, other, pets \[frames: 0\.1 s people, 1 face, 0\.90; 0\.6 s other, nothing clear; 1\.\d s pets, dog 0\.80 \(seen\)\]$/.test(l)), 'a video line ends with each frame: ' + lines.filter((l) => /webm/.test(l)).join(' | '));
   assert(lines.includes('PXL_20261029_100900000.jpg ▸ other (filter said pets): golden retriever 0.40, pets 0.60'), 'changed photo line');
   assert(lines.includes('PXL_20261029_101000000.jpg ▸ people: 3 people, 0.70 (closer look)'), 'classroom line');
-  assert(/, closer look for 6$/.test(lines[0]), 'closer look count in the header: ' + lines[0]);
+  assert(/, closer look for 9$/.test(lines[0]), 'closer look count in the header: ' + lines[0]);
   eq(await text(page, '#details-text'), clip, 'the same text on screen');
   assert(page.errors.length === 0, page.errors.join('; '));
   await ctx.close();
@@ -1171,8 +1335,8 @@ test('run details can be copied from the review, before anything is copied', asy
   await page.waitForSelector('#notice:not([hidden])');
   const clip = await page.evaluate(() => navigator.clipboard.readText());
   const lines = clip.split('\n');
-  assert(/^filter v[\d.]+ run \d\d\/\d\d\/\d\d \d{4} hrs, 10 photos, /.test(lines[0]), 'header: ' + lines[0]);
-  eq(lines.length, 11, 'a line per photo');
+  assert(/^filter v[\d.]+ run \d\d\/\d\d\/\d\d \d{4} hrs, 10 photos, 3 videos, /.test(lines[0]), 'header: ' + lines[0]);
+  eq(lines.length, 14, 'a line per photo and video');
   assert(lines.includes('PXL_20261029_100500000.jpg ▸ food (filter said other): nothing clear (best guess: hook 0.12; best person 0.89; a person fills the frame: a close-up, not counted)'), 'the change shows');
   eq(await text(page, '#review-details-text'), clip, 'the same text on the review screen');
   eq(await camTree(page), before, 'nothing written');
@@ -1185,15 +1349,15 @@ test('a re-check includes photos already sorted, copies nothing, and says where 
   await sort(page, 3);
   await run(page, '#btn-copy');
   await run(page, '#btn-again');
-  eq(await page.evaluate(() => [document.querySelector('#newest').value, document.querySelector('#btn-sort').textContent]), ['3', 'Sort photos'], 'the 3 typed for the last run is kept');
+  eq(await page.evaluate(() => [document.querySelector('#newest').value, document.querySelector('#btn-sort').textContent]), ['3', 'Sort'], 'the 3 typed for the last run is kept');
   await page.check('#recheck');
   eq(await page.evaluate(() => [document.querySelector('#newest').value, document.querySelector('#btn-sort').textContent, document.querySelector('#btn-sort').disabled]),
-    ['3', 'Re-check photos', false], 'ticking re-check keeps the number typed (Gary, 30/10/26)');
+    ['3', 'Re-check', false], 'ticking re-check keeps the number typed (Gary, 30/10/26)');
   await page.fill('#newest', '50');
   await page.uncheck('#recheck');
-  eq(await page.evaluate(() => document.querySelector('#newest').value), '7', 'more than there are: shows the 7 not yet sorted');
+  eq(await page.evaluate(() => document.querySelector('#newest').value), '10', 'more than there are: shows the 10 not yet sorted (7 photos, 3 videos)');
   await page.check('#recheck');
-  eq(await page.evaluate(() => document.querySelector('#newest').value), '10', 'a re-check counts all 10');
+  eq(await page.evaluate(() => document.querySelector('#newest').value), '13', 'a re-check counts all 13');
   const before = await camTree(page);
   await sort(page, 4);
   eq(Object.values(await plan(page)).flat().sort(), ['PXL_20261029_100700000.jpg', 'PXL_20261029_100800000.jpg', 'PXL_20261029_100900000.jpg', 'PXL_20261029_101000000.jpg'],
@@ -1224,7 +1388,7 @@ test('a second run skips what is already copied and takes the next newest', asyn
   await run(page, '#btn-copy');
   await run(page, '#btn-again');
   const r = await rowsOf(page, '#setup-rows');
-  eq([r.Photos, r['Already sorted'], r['Not yet sorted']], ['10', '3', '7'], 'counts after the first run');
+  eq([r.Photos, r.Videos, r['Already sorted'], r['Not yet sorted']], ['10', '3', '3', '10'], 'counts after the first run');
   await sort(page, 2);
   eq(Object.values(await plan(page)).flat().sort(), ['PXL_20261029_100600000.jpg', 'PXL_20261029_100700000.jpg'], 'the next 2 newest');
   await run(page, '#btn-copy');
@@ -1292,7 +1456,7 @@ test('a bad copy stops the run: nothing after it is copied, the original is unto
   eq(onlyRoot(after), onlyRoot(before), 'camera folder as before');
   eq(Object.keys(after).filter((k) => /^(people|food|scenery|documents|screenshots)\/./.test(k)), ['people/PXL_20261029_101000000.jpg'], 'only the photo before the failure was copied');
   assert(after['pets/PXL_20261029_100900000.jpg'] && after['pets/PXL_20261029_100900000.jpg'] !== before['PXL_20261029_100900000.jpg'], 'the bad copy is there, different bytes');
-  eq((await rowsOf(page, '#done-rows')).Copied, '1 of 9, each read back and checked (size and SHA-256)', 'copied count');
+  eq((await rowsOf(page, '#done-rows')).Copied, '1 of 10, each read back and checked (size and SHA-256)', 'copied count');
   const log = await readLog(page, filesIn(after, 'filter-logs')[0]);
   eq(log.result.stopped, 'PXL_20261029_100900000.jpg: SHA-256 differs', 'log says why');
   eq(log.items.map((i) => [i.name, i.ok]), [['PXL_20261029_101000000.jpg', true], ['PXL_20261029_100900000.jpg', false]], 'log lines');
@@ -1388,7 +1552,7 @@ test('setup: example folders are read from filter-examples, odd ones listed as n
   await openExamples(page);
   const r = await rowsOf(page, '#setup-rows');
   eq([r.Photos, r['Already sorted'], r['Not yet sorted']], ['6', '0', '6'], 'counts: example photos are not counted as camera photos');
-  eq(r.Examples, 'blue sky 3, green 2, red 4 (3 each is best); not used: Unsure: a name filter keeps for itself, empty: no photos', 'examples row');
+  eq(r.Examples, 'blue sky 3, green 2, red 4 (3 each is best); not used: Unsure: a name filter keeps for itself, empty: no photos or videos', 'examples row');
   const seg = () => page.evaluate(() => ({
     desc: document.querySelector('#by-description').getAttribute('aria-checked'), ex: document.querySelector('#by-example').getAttribute('aria-checked'),
     exOff: document.querySelector('#by-example').disabled, by: document.querySelector('#by-cap').textContent, copies: document.querySelector('#copies-cap').textContent,
@@ -1402,8 +1566,8 @@ test('setup: example folders are read from filter-examples, odd ones listed as n
   s = await seg();
   eq([s.desc, s.ex], ['false', 'true'], 'by example chosen');
   eq(await page.evaluate(() => document.querySelector('#newest').value), '4', 'the number typed is kept when the mode changes');
-  eq(s.by, 'Each photo is compared with your examples in filter-examples/ and goes to the closest folder, or stays as unsure.', 'caption');
-  eq(s.copies, 'Copies go into subfolders here named like your example folders: blue sky, green, red. Unsure photos stay where they are. Nothing is moved or deleted.', 'where copies go');
+  eq(s.by, 'Each photo is compared with your example photos in filter-examples/, each video with your example videos, and goes to the closest folder, or stays as unsure. Videos are left out: no example folder has videos.', 'caption');
+  eq(s.copies, 'Copies go into subfolders here named like your example folders: blue sky, green, red. Unsure files stay where they are. Nothing is moved or deleted.', 'where copies go');
   eq(await page.evaluate(() => window.filter.state.examples.map((f) => [f.name, f.files.map((x) => x.name)])),
     [['blue sky', ['bluesky_1.jpg', 'bluesky_2.jpg', 'bluesky_3.jpg']], ['green', ['green_1.jpg', 'green_2.jpg']],
       ['red', ['PXL_20261030_100100000.jpg', 'red_1.jpg', 'red_2.jpg', 'red_3.jpg']]], 'example files, in name order');
@@ -1418,8 +1582,8 @@ test('setup: example folders are read from filter-examples, odd ones listed as n
   await run(page, '#btn-change');
   s = await seg();
   eq([s.desc, s.ex, s.exOff], ['true', 'false', true], 'no examples here: by description, by example off');
-  eq(s.by, 'Each photo goes to the folder filter knows that fits what is in it. By example needs a filter-examples/ folder here.', 'says why');
-  eq((await rowsOf(page, '#setup-rows')).Examples, 'none: make filter-examples/ here, with a folder of 3 photos for each kind', 'how to make examples');
+  eq(s.by, 'Each photo goes to the folder filter knows that fits what is in it; each video by three of its frames. By example needs a filter-examples/ folder here.', 'says why');
+  eq((await rowsOf(page, '#setup-rows')).Examples, 'none: make filter-examples/ here, with a folder of 3 photos and 3 videos for each kind', 'how to make examples');
   eq(await page.evaluate(() => window.filter.state.by), 'example', 'the choice is kept for a folder that has examples');
   assert(page.errors.length === 0, page.errors.join('; '));
   await ctx.close();
@@ -1498,8 +1662,8 @@ test('by example: copies land in folders named like the examples, unsure stays, 
   const log = await readLog(page, logs[0]);
   eq([log.mode, log.by, log.version], ['copy', 'example', VERSION], 'log header');
   eq(log.result, { copied: 5, skipped: 0, stayed: 1, stopped: null }, 'log result');
-  eq(log.examples, [{ folder: 'blue sky', used: ['bluesky_1.jpg', 'bluesky_2.jpg', 'bluesky_3.jpg'], failed: [] }, { folder: 'green', used: ['green_1.jpg', 'green_2.jpg'], failed: [] },
-    { folder: 'red', used: ['PXL_20261030_100100000.jpg', 'red_1.jpg', 'red_2.jpg', 'red_3.jpg'], failed: [] }], 'the examples used');
+  eq(log.examples, [{ folder: 'blue sky', photos: ['bluesky_1.jpg', 'bluesky_2.jpg', 'bluesky_3.jpg'], videos: [], failed: [] }, { folder: 'green', photos: ['green_1.jpg', 'green_2.jpg'], videos: [], failed: [] },
+    { folder: 'red', photos: ['PXL_20261030_100100000.jpg', 'red_1.jpg', 'red_2.jpg', 'red_3.jpg'], videos: [], failed: [] }], 'the examples used');
   const dm = log.decisions.find((x) => x.name === 'PXL_20261030_100300000.jpg');
   eq([dm.folder, dm.suggested], ['blue sky', 'unsure'], 'the changed decision');
   assert(log.decisions.every((x) => x.best && typeof x.best.score === 'number' && x.next && typeof x.next.score === 'number'), 'best and runner-up logged for every photo');
@@ -1555,10 +1719,105 @@ test('by example: an example that cannot be read is left out and reported; an em
   await page.evaluate(() => { window.filter.recog.loadEmbedder = () => Promise.resolve(null); window.filter.RULES.minSim = 0.4; });
   await sort(page);
   eq(sortPlan(await plan(page)), sortPlan(EXAMPLE_PLAN), 'the other examples still decide');
-  eq(await page.evaluate(() => window.filter.state.exampleUse.find((u) => u.folder === 'red').used.length), 4, 'red still has 4 examples');
+  eq(await page.evaluate(() => window.filter.state.exampleUse.find((u) => u.folder === 'red').photos.length), 4, 'red still has 4 examples');
   const lines = (await page.evaluate(() => window.filter.runDetails())).split('\n');
   assert(/examples blue sky 3, green 2, red 4,/.test(lines[0]), 'header counts the examples used: ' + lines[0]);
   assert(/^example not used: red\/broken\.jpg: /.test(lines[lines.length - 1]), 'reported: ' + lines[lines.length - 1]);
+  await ctx.close();
+});
+
+test('by example: a video is compared with the example videos only, its frames averaged; a folder with no example videos takes none', async () => {
+  const { ctx, page } = await newApp({ clipboard: true });
+  const clips = { rrr: await clipBytes(page, [RED, RED, RED]), ggg: await clipBytes(page, [GREEN, GREEN, GREEN]),
+    rbb: await clipBytes(page, [RED, BLUE, BLUE]), bbb: await clipBytes(page, [BLUE, BLUE, BLUE]) };
+  // The camera's videos, while no example folder has a video yet.
+  await page.evaluate(async (clips) => {
+    const fx = window.__fx, cam = await fx.exampleCamera();
+    await fx.put(cam, 'PXL_20261030_090300000.webm', fx.unb64(clips.rrr));   // red all through: red 1.00
+    await fx.put(cam, 'PXL_20261030_090200000.webm', fx.unb64(clips.rbb));   // a third red, two thirds blue: averaged, blue sky 0.87, red 0.00
+    await fx.put(cam, 'PXL_20261030_090100000.webm', fx.unb64(clips.ggg));   // green, but green has no example videos: like nothing
+    window.__pick = cam;
+    window.filter.recog.override = (e, bmp) => (window.__answers[e.name] && window.__answers[e.name].vec ? window.__answers[e.name] : { vec: window.__fx.colourVec(bmp) });
+  }, clips);
+  await run(page, '#btn-pick');
+  let r = await rowsOf(page, '#setup-rows');
+  eq([r.Photos, r.Videos, r['Not yet sorted']], ['6', '3', '9'], 'counts');
+  await page.click('#by-example');
+  const setup = () => page.evaluate(() => [document.querySelector('#newest').value, document.querySelector('#by-cap').textContent]);
+  eq(await setup(), ['6', 'Each photo is compared with your example photos in filter-examples/, each video with your example videos, and goes to the closest folder, or stays as unsure. Videos are left out: no example folder has videos.'],
+    'no example videos anywhere: the run takes photos only');
+  await page.evaluate(() => { window.filter.RULES.minSim = 0.4; });
+  await sort(page);
+  eq(Object.values(await plan(page)).flat().length, 6, 'photos only');
+  await page.click('#btn-restart'); await page.click('#btn-restart');
+  // Gary adds an example video to red and to blue sky; green keeps photos only.
+  await page.evaluate(async (clips) => {
+    const fx = window.__fx, ex = await fx.dir('DCIM/Camera/filter-examples');
+    await fx.put(await ex.getDirectoryHandle('red'), 'red_clip.webm', fx.unb64(clips.rrr));
+    await fx.put(await ex.getDirectoryHandle('blue sky'), 'sky_clip.webm', fx.unb64(clips.bbb));
+  }, clips);
+  await run(page, '#btn-change');
+  r = await rowsOf(page, '#setup-rows');
+  eq(r.Examples, 'blue sky 3 + 1 video, green 2, red 4 + 1 video (3 each is best); not used: Unsure: a name filter keeps for itself, empty: no photos or videos', 'examples row counts the videos');
+  eq(await setup(), ['9', 'Each photo is compared with your example photos in filter-examples/, each video with your example videos, and goes to the closest folder, or stays as unsure.'], 'videos taken now');
+  const before = await camTree(page);
+  await sort(page);
+  eq(sortPlan(await plan(page)), sortPlan({
+    red: ['PXL_20261030_100600000.jpg', 'PXL_20261030_100100000.jpg', 'PXL_20261030_090300000.webm'],
+    green: ['PXL_20261030_100500000.jpg'],
+    'blue sky': ['PXL_20261030_100400000.jpg', 'PXL_20261030_090200000.webm'],
+    unsure: ['PXL_20261030_100300000.jpg', 'PXL_20261030_100200000.jpg', 'PXL_20261030_090100000.webm'],
+  }), 'plan: the photos as before, the videos by the example videos');
+  const it = await page.evaluate(() => Object.fromEntries(window.filter.state.plan.map((p) => [p.name, { reason: p.reason, kind: p.kind, example: p.best && p.best.example, score: p.score }])));
+  assert(/^red 1\.00 \(like red_clip\.webm\), next blue sky -0\.(49|50|51)$/.test(it['PXL_20261030_090300000.webm'].reason), 'red video: ' + it['PXL_20261030_090300000.webm'].reason);
+  assert(/^blue sky 0\.8[67] \(like sky_clip\.webm\), next red -?0\.0\d$/.test(it['PXL_20261030_090200000.webm'].reason), 'frames averaged: ' + it['PXL_20261030_090200000.webm'].reason);
+  assert(/^nothing close: (red|blue sky) -0\.(49|50|51) \(like (red|sky)_clip\.webm\), next (red|blue sky) -0\.(49|50|51)$/.test(it['PXL_20261030_090100000.webm'].reason), 'green video: ' + it['PXL_20261030_090100000.webm'].reason);
+  const photos = Object.values(it).filter((x) => x.kind === 'photo');
+  assert(photos.length === 6 && photos.every((x) => /\.jpg$/.test(x.example)), 'photos are compared with example photos only');
+  eq(await page.evaluate(() => [...document.querySelectorAll('.group[data-category="unsure"] .ph')].map((b) => window.filter.state.plan[b.dataset.index].name)),
+    ['PXL_20261030_090100000.webm', 'PXL_20261030_100200000.jpg', 'PXL_20261030_100300000.jpg'], 'videos and photos together, least sure first');
+  await run(page, '#btn-copy');
+  const after = await camTree(page);
+  eq(onlyRoot(after), onlyRoot(before), 'the camera folder itself is exactly as before');
+  eq(examplesOnly(after), examplesOnly(before), 'filter-examples exactly as before');
+  eq(filesIn(after, 'red'), ['PXL_20261030_090300000.webm', 'PXL_20261030_100100000.jpg', 'PXL_20261030_100600000.jpg'], 'red/ holds its photos and its video');
+  eq([after['red/PXL_20261030_090300000.webm'], after['blue sky/PXL_20261030_090200000.webm']], [before['PXL_20261030_090300000.webm'], before['PXL_20261030_090200000.webm']], 'the videos byte-identical');
+  const log = await readLog(page, filesIn(after, 'filter-logs')[0]);
+  eq(log.examples.map((u) => [u.folder, u.photos.length, u.videos]), [['blue sky', 3, ['sky_clip.webm']], ['green', 2, []], ['red', 4, ['red_clip.webm']]], 'the example videos used');
+  eq(log.result, { copied: 6, skipped: 0, stayed: 3, stopped: null }, 'log result');
+  await page.click('#btn-details');
+  await page.waitForSelector('#notice:not([hidden])');
+  const lines = (await page.evaluate(() => navigator.clipboard.readText())).split('\n');
+  assert(/^filter v[\d.]+ run by example \d\d\/\d\d\/\d\d \d{4} hrs, 6 photos, 3 videos, [\d.]+ s per photo, [\d.]+ s per video, examples blue sky 3 \+ 1 video, green 2, red 4 \+ 1 video, bars 0\.40 and gap 0\.05, for videos 0\.32 and 0\.05$/.test(lines[0]), 'header: ' + lines[0]);
+  eq(lines.length, 10, 'a line per file');
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
+test('real models: a video is seen by its frames, by description and by example', async () => {
+  const { ctx, page } = await newApp({ models: 'real' });
+  const clip = (pattern, hue, seed) => clipBytes(page, [0, 1, 2].map((k) => ({ pattern, hue, seed: seed + k })), { w: 512, h: 384 });
+  const clips = { stripes: await clip('stripes', 10, 7), rings: await clip('rings', 120, 20), camera: await clip('stripes', 220, 46) };
+  await page.evaluate(async (clips) => {
+    const fx = window.__fx, cam = await fx.dir('DCIM/Camera'), ex = await fx.dir('DCIM/Camera/filter-examples');
+    for (const kind of ['stripes', 'rings']) await fx.put(await ex.getDirectoryHandle(kind, { create: true }), kind + '.webm', fx.unb64(clips[kind]));
+    await fx.put(cam, 'PXL_20261030_100000000.webm', fx.unb64(clips.camera));
+    window.__pick = cam;
+  }, clips);
+  await run(page, '#btn-pick');
+  await sort(page);
+  let r = await page.evaluate(() => window.filter.state.plan.map((p) => [p.category, p.reason, !!p.thumb, (p.frames || []).length]));
+  console.log('      real models on a drawn clip: ' + r.map((x) => x[0] + ' (' + x[1] + ')').join('; '));
+  eq(r.length, 1, 'the video');
+  assert(r[0][2] && r[0][3] === 3 && /^(\d of 3 frames \w+: |frames disagree: )/.test(r[0][1]), 'three frames recognised and voted on: ' + r[0][1]);
+  await page.click('#btn-restart'); await page.click('#btn-restart');
+  await page.click('#by-example');
+  await sort(page);
+  r = await page.evaluate(() => window.filter.state.plan.map((p) => [p.category, p.reason]));
+  console.log('      real embedder on a drawn clip: ' + r.map((x) => x[0] + ' (' + x[1] + ')').join('; '));
+  eq(r.map((x) => x[0]), ['stripes'], 'stripes in a new hue go to the stripes example video');
+  const real = page.errors.filter((e) => e !== 'INFO: Created TensorFlow Lite XNNPACK delegate for CPU.');
+  assert(real.length === 0, real.join('; '));
   await ctx.close();
 });
 

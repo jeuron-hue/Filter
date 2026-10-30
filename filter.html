@@ -3,22 +3,23 @@
 filter: sorts the photos and videos on Gary's phone into folders by what is in
 them. Installed as a PWA. Everything runs on the phone; nothing is uploaded.
 
-This build is phase F2: photos, Review mode, copy only, in two recognition
-modes picked per run. By description (F1): the fixed list. By example (F2): Gary
-makes folders in filter-examples/ inside the picked folder, each with a few
-example photos (3 is best); filter compares every photo with every example and
+This build is phase F3: photos and videos, Review mode, copy only, in two
+recognition modes picked per run. By description (F1): the fixed list. By example
+(F2): Gary makes folders in filter-examples/ inside the picked folder, each with a
+few example photos and example videos (3 of each is best); filter compares every
+photo with every example photo, and every video with every example video, and
 proposes the closest folder, or "unsure" when nothing is close enough or two
-folders are too close to call. Pick a folder (DCIM/Camera), choose how many of
-the newest photos to sort, filter shows its plan as a grid per folder, Gary moves
-any picture to another folder, then one tap copies them. Copies go into
-subfolders of the picked folder (people, pets, food, screenshots, documents,
-scenery, or the names of Gary's example folders); photos in "other" or "unsure"
-stay where they are and are not copied. Every copy is read back and checked byte
-for byte (size and SHA-256). filter never deletes or overwrites anything, and
-never writes to filter-examples/. Each run writes a log to filter-logs/ in the
-picked folder.
+folders are too close to call. Pick a folder (DCIM/Camera), choose how many of the
+newest photos and videos to sort (one count, both kinds together by date), filter
+shows its plan as a grid per folder, Gary moves any picture to another folder, then
+one tap copies them. Copies go into subfolders of the picked folder (people, pets,
+food, screenshots, documents, scenery, or the names of Gary's example folders),
+videos beside the photos; files in "other" or "unsure" stay where they are and are
+not copied. Every copy is read back and checked byte for byte (size and SHA-256).
+filter never deletes or overwrites anything, and never writes to filter-examples/.
+Each run writes a log to filter-logs/ in the picked folder.
 
-APP_VERSION 0.2.2 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.3.0 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -73,6 +74,16 @@ change the version here in the same commit as the file.
   the pace. Photos and examples are compared by cosine similarity (1 is the same
   direction). On synthetic test patterns (30/10/26) pictures of one pattern scored
   0.60 to 0.96 with each other and 0.06 to 0.52 with other patterns.
+  Videos (F3) need no new model. Three frames are taken, 10 %, 50 % and 90 % of
+  the way through, each decoded like a photo. By description each frame goes
+  through the same models and rules and the folder most frames agree on wins
+  (two of three); frames that all disagree leave the video in other. By example
+  the three frames' numbers are averaged and compared with Gary's example videos
+  only (his choice, 30/10/26: a folder with no example videos takes no videos),
+  against bars of their own (minSimVideo, minGapVideo). Videos are opened one at
+  a time: a phone may have only a few video decoders. A big file (a video) is hashed a
+  piece at a time in plain JavaScript, as the browser's own SHA-256 needs the
+  whole file in memory at once.
 
 How the file is laid out:
   1. Content-Security-Policy: the browser itself refuses any network call to
@@ -83,8 +94,9 @@ How the file is laid out:
   4. Script:
      a. Settings and the recognition rules.
      b. CORE: pure functions: reading a folder in batches, choosing the newest
-        photos, reading a photo's header (size, camera, orientation, preview),
-        the sorting rules, and the safe copy. Tests and the mutation runner
+        files, reading a photo's header (size, camera, orientation, preview),
+        the sorting rules, the frames of a video and their vote, the SHA-256,
+        and the safe copy. Tests and the mutation runner
         target this block.
      c. App: models, the screens, the run, the copy, the log, service worker.
 -->
@@ -198,6 +210,8 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
 .ph img{width:100%;height:100%;object-fit:cover;display:block}
 .ph.changed{outline:2px solid var(--amber);outline-offset:-2px}
 .ph .bad{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:10px var(--font-mono);color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
+/* A video in the grid: its length on a film-edge tag in the corner. */
+.ph .vid{position:absolute;left:3px;bottom:3px;padding:0 4px;border-radius:2px;background:rgba(11,11,11,.72);font:10px/16px var(--font-mono);font-variant-numeric:tabular-nums;letter-spacing:.06em;color:var(--amber)}
 
 #done-details summary,#review-details summary{min-height:var(--tap);display:flex;align-items:center;cursor:pointer}
 #review-details-text,#details-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/17px var(--font-mono);color:var(--ink-2);user-select:text}
@@ -209,7 +223,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
 .bar-row .edge{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bar-row .btn{min-height:48px}
 
-/* Sheet: send one photo to another folder. */
+/* Sheet: send one photo or video to another folder. */
 .veil{position:fixed;inset:0;z-index:7;background:rgba(11,11,11,.72)}
 .sheet{position:fixed;left:0;right:0;bottom:0;z-index:8;background:var(--chrome);border-top:1px solid var(--line);border-radius:10px 10px 0 0;padding:12px 16px max(16px,env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:10px;max-height:86dvh;overflow-y:auto}
 .sheet-photo{display:flex;gap:12px;align-items:center}
@@ -241,7 +255,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
       <i></i><i></i><i></i><i></i>
       <svg width="64" height="64" viewBox="0 0 64 64" aria-hidden="true"><path d="M10 14h44L37 34v14l-10 6V34z" fill="none" stroke="#F2A33A" stroke-width="2.5" stroke-linejoin="round"/><path d="M10 14h44L44 24H20z" fill="#F2A33A"/></svg>
       <h1>filter</h1>
-      <p>Sorts photos into folders by what is in them. Nothing leaves this phone.</p>
+      <p>Sorts photos and videos into folders by what is in them. Nothing leaves this phone.</p>
     </div>
     <div class="actions-col">
       <p class="note" id="start-note"></p>
@@ -251,31 +265,31 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
     </div>
   </section>
 
-  <!-- Setup: what is in the folder, and how many photos to sort. -->
+  <!-- Setup: what is in the folder, and how many photos and videos to sort. -->
   <section class="screen" data-screen="setup">
     <div class="card">
       <div class="card-head"><span class="edge">Folder</span><h2 id="setup-name"></h2></div>
       <div class="rows" id="setup-rows"></div>
-      <div class="seg" role="radiogroup" aria-label="Recognise photos">
+      <div class="seg" role="radiogroup" aria-label="Recognise photos and videos">
         <button type="button" role="radio" id="by-description" data-by="description" aria-checked="true">By description</button>
         <button type="button" role="radio" id="by-example" data-by="example" aria-checked="false">By example</button>
       </div>
       <p class="cap" id="by-cap"></p>
       <div class="field">
-        <label for="newest">Newest photos to sort</label>
+        <label for="newest">Newest photos and videos to sort</label>
         <input type="number" id="newest" min="1" max="2000" step="1" value="200" inputmode="numeric">
       </div>
-      <label class="check"><input type="checkbox" id="recheck"><span>Re-check photos already sorted. Nothing is copied: for comparing what filter says now.</span></label>
+      <label class="check"><input type="checkbox" id="recheck"><span>Re-check files already sorted. Nothing is copied: for comparing what filter says now.</span></label>
       <p class="cap" id="copies-cap"></p>
       <p class="note" id="setup-note"></p>
     </div>
     <div class="actions-col" style="align-self:center">
-      <button class="btn btn-primary btn-big" id="btn-sort" disabled>Sort photos</button>
+      <button class="btn btn-primary btn-big" id="btn-sort" disabled>Sort</button>
       <button class="btn" id="btn-change">Pick another folder</button>
     </div>
   </section>
 
-  <!-- Run: recognising each photo. -->
+  <!-- Run: recognising each photo and video. -->
   <section class="screen" data-screen="run">
     <p class="count" id="run-count">0 / 0</p>
     <div class="bar-track"><div class="bar-fill" id="run-fill"></div></div>
@@ -286,10 +300,10 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
 
   <!-- Review: the plan, a grid per proposed folder. -->
   <section class="screen" data-screen="review">
-    <p class="cap" id="review-cap">Tap a photo to send it to another folder. Nothing is copied until you tap Copy.</p>
+    <p class="cap" id="review-cap">Tap a picture to send it to another folder. Nothing is copied until you tap Copy.</p>
     <div id="groups" style="display:flex;flex-direction:column;gap:18px"></div>
     <button class="btn" id="btn-review-details" style="align-self:center">Copy run details</button>
-    <details class="card" id="review-details"><summary class="cap">Run details: each photo, its folder and why</summary><pre id="review-details-text"></pre></details>
+    <details class="card" id="review-details"><summary class="cap">Run details: each file, its folder and why</summary><pre id="review-details-text"></pre></details>
   </section>
 
   <!-- Copy: each copy is read back and checked. -->
@@ -310,7 +324,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
       <button class="btn btn-primary btn-big" id="btn-again">Back to the folder</button>
       <button class="btn" id="btn-details">Copy run details</button>
     </div>
-    <details class="card" id="done-details"><summary class="cap">Run details: each photo, its folder and why</summary><pre id="details-text"></pre></details>
+    <details class="card" id="done-details"><summary class="cap">Run details: each file, its folder and why</summary><pre id="details-text"></pre></details>
   </section>
 </main>
 
@@ -342,16 +356,16 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.2.2';
+const APP_VERSION = '0.3.0';
 
-// The folders filter knows, in the order they are shown. Photos in "other"
-// stay where they are: nothing is copied for them.
+// The folders filter knows, in the order they are shown. Photos and videos in
+// "other" stay where they are: nothing is copied for them.
 const CATEGORIES = ['people', 'pets', 'food', 'screenshots', 'documents', 'scenery', 'other'];
 const STAY = 'other';
 const LOG_FOLDER = 'filter-logs';
 // By example: Gary's folders are the subfolders of this one, each holding a few
-// example photos. filter only reads it. Photos close to no folder are "unsure"
-// and stay where they are, like "other".
+// example photos and videos. filter only reads it. Files close to no folder are
+// "unsure" and stay where they are, like "other".
 const EXAMPLES = 'filter-examples';
 const UNSURE = 'unsure';
 // Names an example folder may not have: filter's own (compared ignoring case,
@@ -362,7 +376,7 @@ const RESERVED = [STAY, UNSURE, LOG_FOLDER, EXAMPLES];
 const config = {
   batch: 500,           // entries read per batch when listing a folder
   stallMs: 15000,       // no new entry for this long counts as a stall
-  newest: 200,          // default number of the newest photos per run
+  newest: 200,          // default number of the newest photos and videos per run
   maxNewest: 2000,
   headBytes: 262144,    // the first 256 kB of a photo: its header, camera data and preview
   analyseSide: 512,     // the first look works on a copy at this long edge
@@ -371,6 +385,8 @@ const config = {
   closeSide: 1280,      // each photo is decoded once to this long edge, for the closer look
   closeGrid: 3,         // ... and searches it in closeGrid x closeGrid overlapping parts
   closeTile: 0.45,      // ... each this share of the photo's width and height
+  frameAt: [0.1, 0.5, 0.9],   // a video is seen as its frames this far through
+  videoWaitMs: 20000,   // a video that does not open or seek in this time is left where it is
 };
 
 // The rules that turn what the models see into a folder. Each threshold is named
@@ -402,6 +418,10 @@ const RULES = {
                         // from their shoot scored down to 0.33; the highest photo of nothing in the folders
                         // (a lift sign) 0.29. A thin margin, fitted to 100 photos: watch it on new days.
   minGap: 0.05,         // ... and beat the runner-up folder by at least this, or it is unsure (torn between two)
+  // Videos by example: the same two bars, for a video's averaged frames against the example
+  // videos. Kept apart so they can be set from Gary's runs; they start at the photos' values.
+  minSimVideo: 0.32,
+  minGapVideo: 0.05,
 };
 
 // Classifier labels per folder, as index ranges in the model's 1000 ImageNet
@@ -503,9 +523,81 @@ core.readBatch = async (it, { limit, stallMs, now = () => performance.now() }) =
 
 core.hex = (buf) => Array.from(new Uint8Array(buf), (x) => x.toString(16).padStart(2, '0')).join('');
 
-// SHA-256 of a file, as 64 hex characters. Reads the whole file into memory,
-// which is fine for photos; long videos will need a streaming hash (F3/F4).
-core.sha256 = async (blob) => core.hex(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()));
+// SHA-256 of a file, as 64 hex characters. A file up to `whole` bytes (a photo)
+// is hashed by the browser in one go; the browser's SHA-256 needs the whole file
+// in memory, so a bigger one (a video) is read `piece` bytes at a time into the
+// plain JavaScript SHA-256 below, which gives the same 64 characters.
+core.HASH_WHOLE = 64 * 1048576;
+core.HASH_PIECE = 4 * 1048576;
+core.sha256 = async (blob, whole = core.HASH_WHOLE, piece = core.HASH_PIECE) => {
+  if (blob.size <= whole) return core.hex(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()));
+  const h = core.sha256Stream();
+  for (let at = 0; at < blob.size; at += piece) h.update(new Uint8Array(await blob.slice(at, at + piece).arrayBuffer()));
+  return h.hex();
+};
+
+// SHA-256 (FIPS 180-4) fed a piece at a time: update(bytes) as often as needed,
+// then hex() once. Bytes are taken 64 at a time; a piece that ends part way
+// through 64 waits in `buf` for the next one. The end is marked with one 1 bit,
+// zeros, and the length in bits, so that two different files never end alike.
+core.SHA_K = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+core.sha256Stream = () => {
+  const K = core.SHA_K;
+  const H = new Int32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  const W = new Int32Array(64), buf = new Uint8Array(64);
+  let used = 0, total = 0;
+  const block = (b, o) => {
+    for (let i = 0; i < 16; i++) W[i] = (b[o + 4 * i] << 24) | (b[o + 4 * i + 1] << 16) | (b[o + 4 * i + 2] << 8) | b[o + 4 * i + 3];
+    for (let i = 16; i < 64; i++) {
+      const x = W[i - 15], y = W[i - 2];
+      const s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
+      const s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
+      W[i] = (W[i - 16] + s0 + W[i - 7] + s1) | 0;
+    }
+    let a = H[0], b1 = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+    for (let i = 0; i < 64; i++) {
+      const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+      const t1 = (h + S1 + ((e & f) ^ (~e & g)) + K[i] + W[i]) | 0;
+      const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+      const t2 = (S0 + ((a & b1) ^ (a & c) ^ (b1 & c))) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b1; b1 = a; a = (t1 + t2) | 0;
+    }
+    H[0] += a; H[1] += b1; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+  };
+  return {
+    update(data) {
+      total += data.length;
+      let i = 0;
+      if (used) {
+        i = Math.min(64 - used, data.length);
+        buf.set(data.subarray(0, i), used);
+        used += i;
+        if (used < 64) return;
+        block(buf, 0);
+        used = 0;
+      }
+      for (; i + 64 <= data.length; i += 64) block(data, i);
+      buf.set(data.subarray(i), 0);
+      used = data.length - i;
+    },
+    hex() {
+      const tail = new Uint8Array(used < 56 ? 64 : 128), n = tail.length, bits = total * 8;
+      tail.set(buf.subarray(0, used));
+      tail[used] = 0x80;
+      const hi = Math.floor(bits / 4294967296), lo = bits >>> 0;
+      for (let k = 0; k < 4; k++) { tail[n - 8 + k] = (hi >>> (24 - 8 * k)) & 255; tail[n - 4 + k] = (lo >>> (24 - 8 * k)) & 255; }
+      for (let o = 0; o < n; o += 64) block(tail, o);
+      return Array.from(H, (x) => (x >>> 0).toString(16).padStart(8, '0')).join('');
+    },
+  };
+};
 
 // Is there already something called `name` in this folder? A subfolder of that name counts.
 core.exists = async (dir, name) => {
@@ -526,8 +618,8 @@ core.dateKey = (name) => {
   return m.slice(1).join('');
 };
 
-// The newest n photos not yet sorted. `sorted` holds the names already in
-// filter's folders. Photos without a date in their name come after the rest.
+// The newest n files (photos and videos alike) not yet sorted. `sorted` holds the
+// names already in filter's folders. Files without a date in their name come after the rest.
 core.pickNewest = (photos, sorted, n) => {
   const fresh = photos.filter((p) => !sorted.has(p.name));
   const key = new Map(fresh.map((p) => [p, core.dateKey(p.name)]));
@@ -831,6 +923,32 @@ core.nearest = (vec, folders, rules = RULES) => {
   return { category: best.folder, reason: says, best, next };
 };
 
+// A video by example: its frames' lists of numbers averaged into one, which is
+// then compared with the example videos' (each averaged the same way).
+core.meanVec = (vecs) => {
+  if (!vecs.length) return [];
+  const m = new Array(vecs[0].length).fill(0);
+  for (const v of vecs) for (let i = 0; i < m.length; i++) m[i] += v[i] / vecs.length;
+  return m;
+};
+
+// When to look at a video: at each share of its length in `at` (10 %, 50 %, 90 %).
+// A video with no length that can be read gives no times, so it is not recognised.
+core.frameTimes = (duration, at) => (Number.isFinite(duration) && duration > 0 ? at.map((k) => k * duration) : []);
+
+// A video by description: each frame read went through the rules on its own;
+// frames: [{ category, reason }]. The folder more than half the frames agree on
+// wins (two of three), with the first such frame's reason; otherwise the video
+// stays (in other), and the reason lists what each frame said.
+core.videoVote = (frames, stay = STAY) => {
+  if (!frames.length) return { category: stay, reason: 'no frame could be read' };
+  const n = {};
+  for (const f of frames) n[f.category] = (n[f.category] || 0) + 1;
+  const top = Object.keys(n).sort((a, b) => n[b] - n[a])[0];
+  if (2 * n[top] <= frames.length) return { category: stay, reason: 'frames disagree: ' + frames.map((f) => f.category).join(', ') };
+  return { category: top, reason: n[top] + ' of ' + frames.length + ' frames ' + top + ': ' + frames.find((f) => f.category === top).reason };
+};
+
 // Why a subfolder of filter-examples cannot be an example folder, or null if it can.
 core.exampleProblem = (name) => {
   if (name[0] === '.') return 'hidden';
@@ -864,7 +982,7 @@ core.mapAhead = async (items, depth, load, each) => {
   }
 };
 
-// The safe copy. F1 copies only: the original is never changed or deleted.
+// The safe copy. F1 to F3 copy only: the original is never changed or deleted.
 //   1. read the original (through its handle from the listing: no slow lookup
 //      by name in a big folder) and note its size and SHA-256
 //   2. refuse if the target folder already has that name (never overwrite):
@@ -873,7 +991,8 @@ core.mapAhead = async (items, depth, load, each) => {
 //   4. read the copy back and take its size and SHA-256
 //   5. any difference is a failure: the run stops and both files are kept
 // Never throws: the returned log says how far it got and why it stopped.
-// opts.existing: the target folder's names; opts.onStep(step) hears each step.
+// opts.existing: the target folder's names; opts.onStep(step) hears each step;
+// opts.hashWhole and opts.hashPiece: how big files are hashed (core.sha256).
 core.safeCopy = async (src, name, toDir, opts = {}) => {
   const now = opts.now || (() => performance.now());
   const log = { name, ok: false, skipped: false, step: '', copyMade: false, ms: {} };
@@ -884,7 +1003,7 @@ core.safeCopy = async (src, name, toDir, opts = {}) => {
     at('read original');
     const orig = await src.getFile();
     log.size = orig.size;
-    log.sha256 = await core.sha256(orig);
+    log.sha256 = await core.sha256(orig, opts.hashWhole, opts.hashPiece);
     lap('hash');
     at('check target');
     if ((opts.existing && opts.existing.has(name)) || await core.exists(toDir, name)) {
@@ -907,7 +1026,7 @@ core.safeCopy = async (src, name, toDir, opts = {}) => {
     at('read back');
     const copy = await dst.getFile();
     log.copySize = copy.size;
-    log.copySha256 = await core.sha256(copy);
+    log.copySha256 = await core.sha256(copy, opts.hashWhole, opts.hashPiece);
     lap('readBack');
     at('compare');
     if (copy.size !== orig.size) { log.reason = 'size differs: copy ' + copy.size + ' B, original ' + orig.size + ' B'; return log; }
@@ -963,21 +1082,21 @@ const state = {
   busy: false,
   folder: null,       // the picked folder's handle, once access is granted
   stored: null,       // the folder record kept in IndexedDB
-  photos: [],         // photos in the folder: { name, handle }
+  files: [],          // photos and videos in the folder: { name, handle, kind }
   sorted: {},         // per folder filter copies into (F1's and Gary's): the Set of names already in it
   sortedAll: new Set(),
-  examples: [],       // by example: Gary's folders, [{ name, files: [{ name, handle }] }]
+  examples: [],       // by example: Gary's folders, [{ name, files: [photos], videos: [videos] }], each { name, handle, kind }
   exampleNotes: [],   // subfolders of filter-examples that could not be used, and why
   by: 'description',  // the recognition mode Gary last chose: 'description' or 'example'
   runBy: 'description', // the mode of the run on screen
   cats: CATEGORIES,   // the run's folders, in the order shown
   stay: STAY,         // the run's folder that is not copied: "other" or "unsure"
-  exampleUse: [],     // by example: per folder, the examples used and any that failed
-  exampleOf: new Map(), // by example: photo name -> the example folder holding a photo of that name
-  newestTyped: null,  // how many newest photos Gary typed, kept for the session; null: the default
-  plan: [],           // one item per photo: { name, handle, category, first, reason, thumb, score }
+  exampleUse: [],     // by example: per folder, the example photos and videos used and any that failed
+  exampleOf: new Map(), // by example: file name -> the example folder holding a file of that name
+  newestTyped: null,  // how many newest files Gary typed, kept for the session; null: the default
+  plan: [],           // one item per file: { name, handle, kind, category, first, reason, thumb, score, duration, frames }
   stopRequested: false,
-  recheck: false,     // a re-check run: photos already sorted included, nothing copied
+  recheck: false,     // a re-check run: files already sorted included, nothing copied
   wasIn: new Map(),   // name -> the folder it was already in when the run started
   lastRun: null,
 };
@@ -1102,14 +1221,14 @@ async function openFolder(h) {
   show('setup');
   step('reading ' + h.name);
   const t0 = now();
-  const photos = [], subfolders = new Map();
+  const files = [], subfolders = new Map();
   let entries = 0, stalled = false;
   const it = h.values();
   for (;;) {
     const b = await core.readBatch(it, { limit: config.batch, stallMs: config.stallMs });
     entries += b.entries.length;
     for (const e of b.entries) {
-      if (e.kind === 'photo') photos.push({ name: e.name, handle: e.handle });
+      if (e.kind === 'photo' || e.kind === 'video') files.push({ name: e.name, handle: e.handle, kind: e.kind });
       else if (e.kind === 'folder') subfolders.set(e.name, e.handle);
     }
     step('reading ' + h.name + ', ' + entries + ' entries');
@@ -1118,8 +1237,8 @@ async function openFolder(h) {
   }
   await readExamples(subfolders.get(EXAMPLES));
   // filter's own folders are small, so listing them is quick. Their names mark
-  // photos already sorted, which later runs skip. F1's folders and Gary's are one
-  // set: a photo copied by either mode counts as sorted for both.
+  // files already sorted, which later runs skip. F1's folders and Gary's are one
+  // set: a photo or video copied by either mode counts as sorted for both.
   state.sorted = {};
   state.sortedAll = new Set();
   for (const c of folderNames()) {
@@ -1128,22 +1247,22 @@ async function openFolder(h) {
     if (!d) continue;
     for await (const x of d.values()) if (x.kind === 'file') { state.sorted[c].add(x.name); state.sortedAll.add(x.name); }
   }
-  state.photos = photos;
-  const fresh = photos.filter((p) => !state.sortedAll.has(p.name)).length;
+  state.files = files;
+  const fresh = files.filter((p) => !state.sortedAll.has(p.name)).length;
   rows($('#setup-rows'), [
     ['Entries', entries + ' in ' + fmtS(now() - t0) + (stalled ? ', stopped: the folder stalled' : ''), stalled ? 'watch' : undefined],
-    ['Photos', String(photos.length)],
-    ['Already sorted', String(photos.length - fresh)],
+    ['Photos', String(files.filter((f) => f.kind === 'photo').length)],
+    ['Videos', String(files.filter((f) => f.kind === 'video').length)],
+    ['Already sorted', String(files.length - fresh)],
     ['Not yet sorted', String(fresh)],
-    ['Examples', examplesText(), state.exampleNotes.length || state.examples.some((f) => f.files.length < 3) ? 'watch' : undefined],
+    ['Examples', examplesText(), state.exampleNotes.length || state.examples.some(fewExamples) ? 'watch' : undefined],
   ]);
-  state.fresh = fresh;
   setupChoice();
 }
 
 // Gary's example folders: each subfolder of filter-examples/ with at least one
-// photo in it. Read only: filter never writes there. Sorted by name, so the
-// order is the same on every run.
+// photo or video in it. Read only: filter never writes there. Sorted by name, so
+// the order is the same on every run.
 async function readExamples(dir) {
   state.examples = [];
   state.exampleNotes = [];
@@ -1153,10 +1272,14 @@ async function readExamples(dir) {
     if (d.kind !== 'directory') continue;
     const why = core.exampleProblem(d.name);
     if (why) { state.exampleNotes.push(d.name + ': ' + why); continue; }
-    const files = [];
-    for await (const x of d.values()) if (x.kind === 'file' && core.kindOf(x.name) === 'photo') files.push({ name: x.name, handle: x });
-    if (!files.length) { state.exampleNotes.push(d.name + ': no photos'); continue; }
-    state.examples.push({ name: d.name, files: files.sort(byName) });
+    const files = [], videos = [];
+    for await (const x of d.values()) {
+      const kind = x.kind === 'file' ? core.kindOf(x.name) : null;
+      if (kind === 'photo') files.push({ name: x.name, handle: x, kind });
+      else if (kind === 'video') videos.push({ name: x.name, handle: x, kind });
+    }
+    if (!files.length && !videos.length) { state.exampleNotes.push(d.name + ': no photos or videos'); continue; }
+    state.examples.push({ name: d.name, files: files.sort(byName), videos: videos.sort(byName) });
   }
   state.examples.sort(byName);
   state.exampleNotes.sort();
@@ -1165,10 +1288,15 @@ async function readExamples(dir) {
 // Every folder filter copies into: F1's fixed list and Gary's example folders.
 const folderNames = () => [...new Set(CATEGORIES.concat(state.examples.map((f) => f.name)))];
 
+// One or two examples of a kind are flagged (3 is best). None at all is not: a
+// folder with no example videos simply takes no videos (Gary, 30/10/26).
+const fewExamples = (f) => [f.files.length, f.videos.length].some((n) => n > 0 && n < 3);
+const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+
 function examplesText() {
-  if (!state.examples.length && !state.exampleNotes.length) return 'none: make ' + EXAMPLES + '/ here, with a folder of 3 photos for each kind';
-  const list = state.examples.map((f) => f.name + ' ' + f.files.length).join(', ') || 'none usable';
-  return list + (state.examples.some((f) => f.files.length < 3) ? ' (3 each is best)' : '') +
+  if (!state.examples.length && !state.exampleNotes.length) return 'none: make ' + EXAMPLES + '/ here, with a folder of 3 photos and 3 videos for each kind';
+  const list = state.examples.map((f) => f.name + ' ' + f.files.length + (f.videos.length ? ' + ' + plural(f.videos.length, 'video') : '')).join(', ') || 'none usable';
+  return list + (state.examples.some(fewExamples) ? ' (3 each is best)' : '') +
     (state.exampleNotes.length ? '; not used: ' + state.exampleNotes.join(', ') : '');
 }
 
@@ -1183,38 +1311,50 @@ function rememberBy(by) {
 }
 try { if (localStorage.getItem('filter-by') === 'example') state.by = 'example'; } catch (e) { /* use the default */ }
 
+// What a run can sort: by description, photos and videos; by example, photos only
+// if a folder has example photos, and videos only if one has example videos.
+function runKinds() {
+  if (!byExample()) return ['photo', 'video'];
+  return ['photo', 'video'].filter((k) => state.examples.some((f) => (k === 'photo' ? f.files : f.videos).length));
+}
+const runnable = () => { const kinds = runKinds(); return state.files.filter((f) => kinds.includes(f.kind)); };
+
 // The sort button and the count follow the re-check switch: a re-check takes the
-// newest photos whether sorted or not.
+// newest files whether sorted or not.
 function setupChoice() {
-  const ex = byExample();
+  const ex = byExample(), kinds = runKinds();
   $('#by-description').setAttribute('aria-checked', String(!ex));
   $('#by-example').setAttribute('aria-checked', String(ex));
   $('#by-example').disabled = !state.examples.length;
   $('#by-cap').textContent = ex
-    ? 'Each photo is compared with your examples in ' + EXAMPLES + '/ and goes to the closest folder, or stays as unsure.'
-    : 'Each photo goes to the folder filter knows that fits what is in it.' + (state.examples.length ? '' : ' By example needs a ' + EXAMPLES + '/ folder here.');
+    ? 'Each photo is compared with your example photos in ' + EXAMPLES + '/, each video with your example videos, and goes to the closest folder, or stays as unsure.' +
+      (kinds.includes('video') ? '' : ' Videos are left out: no example folder has videos.') + (kinds.includes('photo') ? '' : ' Photos are left out: no example folder has photos.')
+    : 'Each photo goes to the folder filter knows that fits what is in it; each video by three of its frames.' + (state.examples.length ? '' : ' By example needs a ' + EXAMPLES + '/ folder here.');
   $('#copies-cap').textContent = ex
-    ? 'Copies go into subfolders here named like your example folders: ' + state.examples.map((f) => f.name).join(', ') + '. Unsure photos stay where they are. Nothing is moved or deleted.'
-    : 'Copies go into subfolders here: people, pets, food, screenshots, documents, scenery. Photos in "other" stay where they are. Nothing is moved or deleted.';
+    ? 'Copies go into subfolders here named like your example folders: ' + state.examples.map((f) => f.name).join(', ') + '. Unsure files stay where they are. Nothing is moved or deleted.'
+    : 'Copies go into subfolders here: people, pets, food, screenshots, documents, scenery, videos beside the photos. Files in "other" stay where they are. Nothing is moved or deleted.';
   const recheck = $('#recheck').checked;
-  const can = recheck ? state.photos.length : state.fresh;
+  const list = runnable();
+  const can = recheck ? list.length : list.filter((f) => !state.sortedAll.has(f.name)).length;
   // The number Gary typed is kept when the switches change (he asked, 30/10/26); it
-  // is only shown smaller while fewer photos than that are there to take.
+  // is only shown smaller while fewer files than that are there to take.
   $('#newest').value = Math.min(state.newestTyped || config.newest, Math.max(1, can));
   $('#btn-sort').disabled = can === 0;
-  $('#btn-sort').textContent = recheck ? 'Re-check photos' : 'Sort photos';
-  $('#setup-note').textContent = can ? '' : state.photos.length ? 'Every photo here is already sorted. Re-check them with the switch above.' : 'No photos in this folder.';
+  $('#btn-sort').textContent = recheck ? 'Re-check' : 'Sort';
+  $('#setup-note').textContent = can ? '' : list.length ? 'Everything here is already sorted. Re-check it with the switch above.'
+    : state.files.length ? 'Nothing here to sort by example: see above.' : 'No photos or videos in this folder.';
 }
 
 /* ---------- Models ---------- */
 
 // MediaPipe loads on the first run, from vendor/ (or the offline cache). The
-// models run here in WebAssembly; the photos go nowhere.
+// models run here in WebAssembly; the photos and videos go nowhere.
 const recog = {
   promise: null,
-  // Test seam: (entry) => { labels: [{ index, name, score }], faces: [{ w, h, score, tile }],
+  // Test seam: (entry, bmp) => { labels: [{ index, name, score }], faces: [{ w, h, score, tile }],
   // objects: [{ name, score, x, y, w, h }], closer: { objects: [...] } } with places and
   // sizes as shares of the photo, used instead of the models; closer is what the closer look finds.
+  // bmp is the picture looked at (for a video, one of its frames).
   override: null,
   load() {
     if (this.override) return Promise.resolve(null);
@@ -1236,7 +1376,7 @@ const recog = {
   },
   async analyse(bmp, entry) {
     if (this.override) {
-      const o = this.override(entry) || {};
+      const o = this.override(entry, bmp) || {};
       const f = o.faces || [];
       return { labels: o.labels || [], boxes: core.normBoxes((o.objects || []).map((d) => ({ x: 0, y: 0, ...d })), 1, 1),
         faces: core.facesFrom([{ full: true, dets: f.filter((d) => !d.tile) }, { full: false, dets: f.filter((d) => d.tile) }], 1, 1) };
@@ -1259,7 +1399,7 @@ const recog = {
       x: x.boundingBox.originX, y: x.boundingBox.originY, w: x.boundingBox.width, h: x.boundingBox.height }));
   },
   // By example: the image embedder alone, loaded on the first run by example.
-  // Test seam: override(entry, bmp).vec is the photo's list of numbers.
+  // Test seam: override(entry, bmp).vec is the picture's list of numbers.
   embedPromise: null,
   loadEmbedder() {
     if (this.override) return Promise.resolve(null);
@@ -1281,7 +1421,7 @@ const recog = {
   // The closer look: the object detector on overlapping parts of the 1280 px decode.
   // Each part's boxes are put back on the whole photo (as shares of it).
   async closer(big, entry) {
-    if (this.override) return core.normBoxes((((this.override(entry) || {}).closer || {}).objects || []).map((d) => ({ x: 0, y: 0, ...d })), 1, 1);
+    if (this.override) return core.normBoxes((((this.override(entry, big) || {}).closer || {}).objects || []).map((d) => ({ x: 0, y: 0, ...d })), 1, 1);
     const { objects } = await this.load();
     let boxes = [];
     for (const t of core.grid(big.width, big.height, config.closeGrid, config.closeTile)) {
@@ -1292,12 +1432,13 @@ const recog = {
   },
 };
 
-/* ---------- Reading and decoding one photo ---------- */
+/* ---------- Reading and decoding one photo or video ---------- */
 
 // Each photo is decoded once, upright (from its camera data) and at closeSide,
 // for the closer look; the first look gets a copy at analyseSide. Decoding runs
-// ahead, while the models work on the photo before.
+// ahead, while the models work on the photo before. A video goes to prepareVideo.
 async function prepare(entry) {
+  if (entry.kind === 'video') return prepareVideo(entry);
   const t0 = now();
   try {
     const file = await entry.handle.getFile();
@@ -1309,13 +1450,82 @@ async function prepare(entry) {
       if (!s || s.w >= s.h) opts.resizeWidth = config.closeSide; else opts.resizeHeight = config.closeSide;
     }
     const big = await createImageBitmap(file, opts);
-    const k = Math.min(1, config.analyseSide / Math.max(big.width, big.height));
-    const bmp = await createImageBitmap(big, { resizeWidth: Math.max(1, Math.round(big.width * k)), resizeHeight: Math.max(1, Math.round(big.height * k)), resizeQuality: 'medium' });
+    const bmp = await smaller(big);
     const size = s || { w: big.width, h: big.height };
     return { entry, info, big, bmp, size, ms: now() - t0 };
   } catch (e) {
     return { entry, error: errText(e), ms: now() - t0 };
   }
+}
+
+// The copy at analyseSide that the first look works on.
+function smaller(big) {
+  const k = Math.min(1, config.analyseSide / Math.max(big.width, big.height));
+  return createImageBitmap(big, { resizeWidth: Math.max(1, Math.round(big.width * k)), resizeHeight: Math.max(1, Math.round(big.height * k)), resizeQuality: 'medium' });
+}
+
+// A video: a frame at each share of its length in config.frameAt, each decoded
+// like a photo (closeSide, and a copy at analyseSide). Chrome turns the frames
+// upright itself. One video is opened at a time, even while files are read
+// ahead: a phone may have only a few video decoders, and asking for several at
+// once can fail.
+let videoTurn = Promise.resolve();
+function prepareVideo(entry) {
+  const job = videoTurn.then(() => videoFrames(entry));
+  videoTurn = job.then(() => {}, () => {});
+  return job;
+}
+async function videoFrames(entry) {
+  const t0 = now();
+  const v = document.createElement('video');
+  v.muted = true; v.playsInline = true; v.preload = 'auto';
+  const frames = [];
+  let url = null;
+  try {
+    url = URL.createObjectURL(await entry.handle.getFile());
+    await mediaEvent(v, 'loadedmetadata', () => { v.src = url; });
+    const w = v.videoWidth, h = v.videoHeight;
+    if (!w || !h) throw new Error('no picture in it');
+    const times = core.frameTimes(v.duration, config.frameAt);
+    if (!times.length) throw new Error('its length cannot be read');
+    const k = Math.min(1, config.closeSide / Math.max(w, h));
+    for (const at of times) {
+      await mediaEvent(v, 'seeked', () => { v.currentTime = at; });
+      const f = { at, big: await createImageBitmap(v, { resizeWidth: Math.max(1, Math.round(w * k)), resizeHeight: Math.max(1, Math.round(h * k)), resizeQuality: 'medium' }) };
+      frames.push(f);
+      f.bmp = await smaller(f.big);
+    }
+    return { entry, info: { format: null, make: null }, frames, size: { w, h }, duration: v.duration, ms: now() - t0 };
+  } catch (e) {
+    release({ frames });
+    return { entry, error: errText(e), ms: now() - t0 };
+  } finally {
+    v.removeAttribute('src');
+    v.load();
+    if (url) URL.revokeObjectURL(url);
+  }
+}
+
+// Wait for the video's event `name` after start(); a playback error, or no answer
+// within config.videoWaitMs, fails instead.
+function mediaEvent(v, name, start) {
+  return new Promise((resolve, reject) => {
+    const end = (err) => {
+      clearTimeout(timer);
+      v.removeEventListener(name, ok); v.removeEventListener('error', bad);
+      if (err) reject(err); else resolve();
+    };
+    const ok = () => end(null);
+    const bad = () => end(new Error('cannot play it' + (v.error && v.error.message ? ' (' + v.error.message + ')' : '')));
+    const timer = setTimeout(() => end(new Error('no answer in ' + config.videoWaitMs / 1000 + ' s (' + name + ')')), config.videoWaitMs);
+    v.addEventListener(name, ok); v.addEventListener('error', bad);
+    start();
+  });
+}
+
+// Frees what prepare decoded: a photo's two pictures, or each frame's.
+function release(p) {
+  for (const f of p.frames || [p]) { if (f.bmp) f.bmp.close(); if (f.big) f.big.close(); }
 }
 
 function textCheck(bmp) {
@@ -1333,7 +1543,7 @@ async function thumbOf(bmp) {
   return URL.createObjectURL(await c.convertToBlob({ type: 'image/jpeg', quality: 0.72 }));
 }
 
-/* ---------- Run: recognise the newest photos ---------- */
+/* ---------- Run: recognise the newest photos and videos ---------- */
 
 function clearPlan() {
   for (const p of state.plan) if (p.thumb) URL.revokeObjectURL(p.thumb);
@@ -1350,13 +1560,13 @@ async function runSort() {
   state.wasIn = new Map();
   for (const c of folderNames()) for (const name of state.sorted[c] || []) state.wasIn.set(name, c);
   state.exampleOf = new Map();
-  for (const f of state.examples) for (const x of f.files) state.exampleOf.set(x.name, f.name);
-  const pick = core.pickNewest(state.photos, state.recheck ? new Set() : state.sortedAll, n);
+  for (const f of state.examples) for (const x of f.files.concat(f.videos)) state.exampleOf.set(x.name, f.name);
+  const pick = core.pickNewest(runnable(), state.recheck ? new Set() : state.sortedAll, n);
   if (!pick.chosen.length) return;
   clearPlan();
   state.stopRequested = false;
   state.exampleUse = [];
-  const stats = { decode: 0, analyse: 0, failed: 0, closer: 0 };
+  const stats = { failed: 0, closer: 0, looks: 0, photo: { n: 0, ms: 0 }, video: { n: 0, ms: 0 } };
   const tally = Object.fromEntries(state.cats.map((c) => [c, 0]));
   const total = pick.chosen.length;
   $('#run-count').textContent = '0 / ' + total;
@@ -1371,49 +1581,50 @@ async function runSort() {
     show('setup');
     return;
   }
-  let folders = [];
+  let folders = { photo: [], video: [] };
   if (ex) {
     step('reading the examples');
     $('#run-cap').textContent = 'Reading the examples';
-    folders = await exampleVectors();
+    folders = await exampleVectors(new Set(pick.chosen.map((x) => x.kind)));
   }
   const t0 = now();
+  let last = t0;
   step('recognising');
   await core.mapAhead(pick.chosen, config.prefetch, prepare, async (p, i) => {
-    const item = { name: p.entry.name, handle: p.entry.handle, category: state.stay, reason: '', thumb: null, score: null };
+    const kind = p.entry.kind;
+    const item = { name: p.entry.name, handle: p.entry.handle, kind, category: state.stay, reason: '', thumb: null, score: null };
     if (p.error) {
       item.reason = 'could not open: ' + p.error;
       stats.failed++;
     } else {
-      const a = now();
       try {
-        const c = ex ? core.nearest(await recog.embed(p.bmp, p.entry), folders) : await describe(p, stats);
+        const c = kind === 'video' ? await recogniseVideo(p, item, folders.video, stats)
+          : ex ? core.nearest(await recog.embed(p.bmp, p.entry), folders.photo) : await describe(p, stats);
         item.category = c.category;
         item.reason = c.reason;
         if (ex) { item.score = c.best ? c.best.score : null; item.best = c.best; item.next = c.next; }
-        item.thumb = await thumbOf(p.bmp);
+        item.thumb = await thumbOf(kind === 'video' ? p.frames[p.frames.length >> 1].bmp : p.bmp);
       } catch (e) {
         item.reason = 'could not recognise: ' + errText(e);
         stats.failed++;
-      } finally { p.bmp.close(); p.big.close(); }
-      stats.analyse += now() - a;
-      stats.decode += p.ms;
+      } finally { release(p); }
     }
     item.first = item.category;
     state.plan.push(item);
     tally[item.category]++;
-    const done = i + 1, per = (now() - t0) / done;
+    const t = now();
+    stats[kind].n++; stats[kind].ms += t - last; last = t;
+    const done = i + 1, per = (t - t0) / done;
     $('#run-count').textContent = done + ' / ' + total;
     $('#run-fill').style.width = (100 * done / total) + '%';
     $('#run-tally').textContent = state.cats.filter((c) => tally[c]).map((c) => c + ' ' + tally[c]).join('  ');
-    $('#run-cap').textContent = fmtS(per) + ' per photo, about ' + fmtS(per * (total - done)) + ' to go';
+    $('#run-cap').textContent = fmtS(per) + ' per file, about ' + fmtS(per * (total - done)) + ' to go';
     return !state.stopRequested;
   });
-  const done = state.plan.length;
   state.lastRun = {
-    by: state.runBy, photos: done, chosen: total,
-    perPhotoMs: done ? (now() - t0) / done : 0,
-    closer: stats.closer, decodeMs: done ? stats.decode / done : 0, analyseMs: done ? stats.analyse / done : 0, failed: stats.failed,
+    by: state.runBy, chosen: total, photos: stats.photo.n, videos: stats.video.n,
+    perPhotoMs: stats.photo.n ? stats.photo.ms / stats.photo.n : 0, perVideoMs: stats.video.n ? stats.video.ms / stats.video.n : 0,
+    closer: stats.closer, looks: stats.looks, failed: stats.failed,
   };
   renderReview();
   show('review');
@@ -1421,7 +1632,9 @@ async function runSort() {
 
 // By description (F1): the three models and the rules, with the closer look for
 // people far away when the first look is not already people or a screenshot.
+// For a video, p is one of its frames.
 async function describe(p, stats) {
+  stats.looks++;
   const r = await recog.analyse(p.bmp, p.entry);
   const text = textCheck(p.bmp);
   const objects = core.objectsFrom(core.dedupe(r.boxes));
@@ -1441,29 +1654,57 @@ async function describe(p, stats) {
   return c;
 }
 
-// By example: every example photo decoded the same way as the photos and turned
-// into its list of numbers. Read fresh on every run, so a change to the examples
-// counts at once. An example that cannot be read is left out and reported.
-async function exampleVectors() {
-  const folders = [];
+// A video (F3). By description each frame goes through the rules on its own and
+// the frames vote; item.frames keeps what each said, for the run details. By
+// example the frames' numbers are averaged and compared with the example videos
+// only, against the videos' own bars.
+async function recogniseVideo(p, item, folders, stats) {
+  item.duration = p.duration;
+  if (state.runBy === 'example') return core.nearest(core.meanVec(await embedFrames(p)), folders, videoRules());
+  item.frames = [];
+  for (const f of p.frames) {
+    const c = await describe({ entry: p.entry, info: p.info, big: f.big, bmp: f.bmp, size: p.size }, stats);
+    item.frames.push({ at: f.at, category: c.category, reason: c.reason });
+  }
+  return core.videoVote(item.frames);
+}
+const embedFrames = async (p) => { const vecs = []; for (const f of p.frames) vecs.push(await recog.embed(f.bmp, p.entry)); return vecs; };
+const videoRules = () => ({ ...RULES, minSim: RULES.minSimVideo, minGap: RULES.minGapVideo });
+
+// By example: every example photo and video decoded the same way as the files
+// and turned into its list of numbers (a video: its frames' numbers averaged).
+// Only the kinds the run has are read. Read fresh on every run, so a change to
+// the examples counts at once. An example that cannot be read is left out and
+// reported. Returns the folders to compare photos with, and videos with.
+async function exampleVectors(kinds) {
+  const out = { photo: [], video: [] };
   for (const f of state.examples) {
-    const use = { folder: f.name, used: [], failed: [] }, examples = [];
-    for (const x of f.files) {
-      const p = await prepare({ name: x.name, handle: x.handle });
+    const use = { folder: f.name, photos: [], videos: [], failed: [] }, got = { photo: [], video: [] };
+    for (const x of (kinds.has('photo') ? f.files : []).concat(kinds.has('video') ? f.videos : [])) {
+      const p = await prepare(x);
       if (p.error) { use.failed.push(x.name + ': ' + p.error); continue; }
-      try { examples.push({ name: x.name, vec: await recog.embed(p.bmp, p.entry) }); use.used.push(x.name); }
-      catch (e) { use.failed.push(x.name + ': ' + errText(e)); }
-      finally { p.bmp.close(); p.big.close(); }
+      try {
+        got[x.kind].push({ name: x.name, vec: x.kind === 'video' ? core.meanVec(await embedFrames(p)) : await recog.embed(p.bmp, p.entry) });
+        use[x.kind + 's'].push(x.name);
+      } catch (e) { use.failed.push(x.name + ': ' + errText(e)); }
+      finally { release(p); }
     }
     state.exampleUse.push(use);
-    if (examples.length) folders.push({ name: f.name, examples });
+    for (const k of ['photo', 'video']) if (got[k].length) out[k].push({ name: f.name, examples: got[k] });
   }
-  return folders;
+  return out;
 }
 
 /* ---------- Review: the plan, a grid per proposed folder ---------- */
 
 function toCopy() { return state.plan.filter((p) => p.category !== state.stay); }
+
+// "10 photos, 3 videos", leaving out videos when there are none.
+function countText(items) {
+  const v = items.filter((p) => p.kind === 'video').length;
+  return plural(items.length - v, 'photo') + (v ? ', ' + plural(v, 'video') : '');
+}
+const fmtDur = (s) => Math.floor(s / 60) + ':' + pad2(Math.floor(s % 60));
 
 function renderReview() {
   const box = $('#groups');
@@ -1482,9 +1723,10 @@ function renderReview() {
       const b = document.createElement('button');
       b.className = 'ph' + (p.category !== p.first ? ' changed' : '');
       b.dataset.index = i;
-      b.setAttribute('aria-label', p.name + ', ' + p.category);
+      b.setAttribute('aria-label', p.name + ', ' + (p.kind === 'video' ? 'video, ' : '') + p.category);
       if (p.thumb) { const img = document.createElement('img'); img.src = p.thumb; img.alt = ''; b.append(img); }
       else { const s = document.createElement('span'); s.className = 'bad'; s.textContent = 'no preview'; b.append(s); }
+      if (p.kind === 'video') { const v = document.createElement('span'); v.className = 'vid'; v.textContent = '▶' + (p.duration ? ' ' + fmtDur(p.duration) : ''); b.append(v); }
       b.addEventListener('click', () => openSheet(i));
       grid.append(b);
     }
@@ -1494,8 +1736,8 @@ function renderReview() {
   const n = toCopy().length;
   $('#btn-copy').textContent = 'Copy ' + n;
   $('#btn-copy').disabled = n === 0;
-  $('#bar-edge').textContent = state.recheck ? 're-check ▸ ' + state.plan.length + ' photos ▸ nothing copied' : state.plan.length + ' photos ▸ ' + (state.plan.length - n) + ' stay';
-  $('#review-cap').textContent = state.recheck ? 'A re-check: nothing will be copied. Copy the run details to compare.' : 'Tap a photo to send it to another folder. Nothing is copied until you tap Copy.';
+  $('#bar-edge').textContent = state.recheck ? 're-check ▸ ' + countText(state.plan) + ' ▸ nothing copied' : countText(state.plan) + ' ▸ ' + (state.plan.length - n) + ' stay';
+  $('#review-cap').textContent = state.recheck ? 'A re-check: nothing will be copied. Copy the run details to compare.' : 'Tap a picture to send it to another folder. Nothing is copied until you tap Copy.';
   $('#review-details-text').textContent = runDetails();
 }
 
@@ -1563,9 +1805,10 @@ async function runCopy() {
         dirs[p.category] = await root.getDirectoryHandle(p.category, { create: true });
       }
       step('copying ' + (i + 1) + ' of ' + total);
-      $('#copy-cap').textContent = p.name + ' ▸ ' + p.category;
-      const r = await core.safeCopy(p.handle, p.name, dirs[p.category], { existing: state.sorted[p.category] });
-      log.items.push({ name: p.name, from: '.', to: p.category, suggested: p.first, reason: p.reason,
+      // Each step shows, so a long video visibly moves from copy to read back to compare.
+      const r = await core.safeCopy(p.handle, p.name, dirs[p.category], { existing: state.sorted[p.category],
+        onStep: (s) => { $('#copy-cap').textContent = p.name + ' ▸ ' + p.category + ' ▸ ' + s; } });
+      log.items.push({ name: p.name, kind: p.kind, from: '.', to: p.category, suggested: p.first, reason: p.reason,
         size: r.size, sha256: r.sha256, copySha256: r.copySha256 || null, ok: r.ok, skipped: r.skipped, step: r.step, problem: r.reason || null });
       if (r.ok) { out.copied++; state.sorted[p.category].add(p.name); state.sortedAll.add(p.name); }
       else if (r.skipped) out.skipped++;
@@ -1576,9 +1819,9 @@ async function runCopy() {
   } catch (e) {
     out.failed = { name: '(folder)', step: 'making a folder', reason: errText(e), copyMade: false };
   }
-  // Every photo's decision, copied or not, so a run can be checked and the rules tuned.
-  log.decisions = state.plan.map((p) => ({ name: p.name, folder: p.category, suggested: p.first, reason: p.reason,
-    ...(state.runBy === 'example' ? { best: p.best || null, next: p.next || null } : {}) }));
+  // Every file's decision, copied or not, so a run can be checked and the rules tuned.
+  log.decisions = state.plan.map((p) => ({ name: p.name, kind: p.kind, folder: p.category, suggested: p.first, reason: p.reason,
+    ...(state.runBy === 'example' ? { best: p.best || null, next: p.next || null } : {}), ...(p.frames ? { frames: p.frames } : {}) }));
   log.finished = new Date().toISOString();
   log.result = { copied: out.copied, skipped: out.skipped, stayed: state.plan.length - total, stopped: out.failed ? out.failed.name + ': ' + out.failed.reason : null };
   let logName = null, logError = null;
@@ -1586,6 +1829,9 @@ async function runCopy() {
   try { logName = await writeLog(root, log); } catch (e) { logError = errText(e); }
   showDone(out, logName, logError, now() - t0, total);
 }
+
+// "1.1 s per photo, 4.0 s per video", for the kinds the run had.
+const paceText = (r) => [r.photos ? fmtS(r.perPhotoMs) + ' per photo' : null, r.videos ? fmtS(r.perVideoMs) + ' per video' : null].filter(Boolean).join(', ') || 'nothing recognised';
 
 function showDone(out, logName, logError, ms, total) {
   const f = out.failed;
@@ -1596,32 +1842,38 @@ function showDone(out, logName, logError, ms, total) {
       (f.copyMade ? ' The faulty copy is in the folder beside it; nothing was deleted.' : '')
     : '';
   const changed = state.plan.filter((p) => p.category !== p.first).length;
+  const r = state.lastRun;
   rows($('#done-rows'), [
     ['Copied', out.copied + ' of ' + total + ', each read back and checked (size and SHA-256)', f ? 'watch' : 'pass'],
     ['Already there', String(out.skipped)],
     ['Stayed', (state.plan.length - total) + ' in ' + state.stay + ', not copied'],
     ['You changed', changed + ' of ' + state.plan.length],
     ['Copy time', fmtS(ms)],
-    ['Recognition', state.lastRun ? fmtS(state.lastRun.perPhotoMs) + ' per photo, ' + (state.lastRun.by === 'example' ? 'by example' : 'closer look for ' + state.lastRun.closer + ' of ' + state.lastRun.photos) : 'none'],
+    ['Recognition', r ? paceText(r) + ', ' + (r.by === 'example' ? 'by example' : 'closer look for ' + r.closer + ' of ' + plural(r.looks, 'look')) : 'none'],
     ['Log', logName || 'NOT written: ' + logError, logName ? undefined : 'fail'],
   ]);
   $('#details-text').textContent = runDetails();
   show('done');
 }
 
-// The run as plain text: one line per photo with its folder and the reason, for
-// pasting back to Claude when a photo went to the wrong folder. Names and reasons
-// only. By example, each reason holds the best folder's score and the runner-up's.
+// The run as plain text: one line per file with its folder and the reason, for
+// pasting back to Claude when a photo or video went to the wrong folder. Names and
+// reasons only. By example, each reason holds the best folder's score and the
+// runner-up's; by description, a video's line ends with what each frame said.
 function runDetails() {
   const r = state.lastRun || {};
   const ex = state.runBy === 'example';
-  const head = 'filter v' + APP_VERSION + (state.recheck ? ' re-check' : ' run') + (ex ? ' by example' : '') + ' ' + fmtDate(Date.now()) + ' ' + fmtTime(Date.now()) + ', ' + state.plan.length + ' photos, ' +
-    fmtS(r.perPhotoMs || 0) + ' per photo, ' + (ex ? 'examples ' + state.exampleUse.map((u) => u.folder + ' ' + u.used.length).join(', ') +
-      ', bars ' + RULES.minSim.toFixed(2) + ' and gap ' + RULES.minGap.toFixed(2) : 'closer look for ' + (r.closer || 0));
+  const videos = state.plan.some((p) => p.kind === 'video');
+  const head = 'filter v' + APP_VERSION + (state.recheck ? ' re-check' : ' run') + (ex ? ' by example' : '') + ' ' + fmtDate(Date.now()) + ' ' + fmtTime(Date.now()) + ', ' +
+    countText(state.plan) + ', ' + paceText(r) + ', ' +
+    (ex ? 'examples ' + state.exampleUse.map((u) => u.folder + ' ' + u.photos.length + (u.videos.length ? ' + ' + plural(u.videos.length, 'video') : '')).join(', ') +
+      ', bars ' + RULES.minSim.toFixed(2) + ' and gap ' + RULES.minGap.toFixed(2) + (videos ? ', for videos ' + RULES.minSimVideo.toFixed(2) + ' and ' + RULES.minGapVideo.toFixed(2) : '')
+      : 'closer look for ' + (r.closer || 0));
   const lines = state.plan.map((p) => {
     const was = state.wasIn.get(p.name), of = ex && state.exampleOf.get(p.name);
     return p.name + ' ▸ ' + p.category + (p.category !== p.first ? ' (filter said ' + p.first + ')' : '') + ': ' + p.reason +
-      (was ? ' [already in ' + was + ']' : '') + (of ? ' [example of ' + of + ']' : '');
+      (was ? ' [already in ' + was + ']' : '') + (of ? ' [example of ' + of + ']' : '') +
+      (p.frames ? ' [frames: ' + p.frames.map((f) => f.at.toFixed(1) + ' s ' + f.category + ', ' + f.reason).join('; ') + ']' : '');
   });
   const failed = ex ? state.exampleUse.flatMap((u) => u.failed.map((f) => 'example not used: ' + u.folder + '/' + f)) : [];
   return [head].concat(lines, failed).join('\n');
@@ -1633,7 +1885,7 @@ $('#btn-pick').addEventListener('click', () => task('picking a folder', pickFold
 $('#btn-allow').addEventListener('click', () => task('asking for access', allowAccess));
 $('#btn-change').addEventListener('click', () => task('picking a folder', pickFolder));
 $('#btn-sort').addEventListener('click', () => task('sorting', runSort));
-$('#btn-stop-run').addEventListener('click', () => { state.stopRequested = true; step('stopping after this photo'); });
+$('#btn-stop-run').addEventListener('click', () => { state.stopRequested = true; step('stopping after this one'); });
 $('#btn-copy').addEventListener('click', () => task('copying', runCopy));
 $('#btn-again').addEventListener('click', () => task('reading the folder', () => openFolder(state.folder)));
 // Run details to the clipboard, from the review or the done screen. If the

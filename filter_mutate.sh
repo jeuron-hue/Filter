@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # filter_mutate.sh: mutation run over the core functions: folder reading, choosing
-# the newest photos, reading photo headers, the sorting rules, comparing photos
-# with Gary's examples (F2) and the safe copy.
+# the newest photos and videos, reading photo headers, the sorting rules, comparing
+# photos with Gary's examples (F2), a video's frames and their vote (F3), the
+# SHA-256 and the safe copy.
 #
 # The idea: plant one small, deliberate bug (a "mutant") in the CORE block of
 # filter.html, run the core behaviour tests against it, and expect them to
@@ -98,6 +99,25 @@ grid: parts not spread to the edge ||| x: n > 1 ? Math.round(i * (w - tw) / (n -
 grid: rows spread by the width ||| y: n > 1 ? Math.round(j * (h - th) / (n - 1)) : 0 ||| y: n > 1 ? Math.round(j * (w - tw) / (n - 1)) : 0
 grid: part size ignores k ||| const tw = Math.round(w * k), th = Math.round(h * k), out = []; ||| const tw = Math.round(w / n), th = Math.round(h / n), out = [];
 objects: best of any box not tracked ||| if (groups[g].includes(d.name)) out[g].best = Math.max(out[g].best, d.score); ||| if (groups[g].includes(d.name)) out[g].best = 0;
+hash: big files hashed whole ||| if (blob.size <= whole) return ||| if (true) return
+hash: a piece skipped ||| at < blob.size; at += piece) ||| at < blob.size; at += piece + 1)
+hash: the leftover of a piece dropped ||| used = data.length - i; ||| used = 0;
+hash: a part-filled block joined wrong ||| buf.set(data.subarray(0, i), used); ||| buf.set(data.subarray(0, i), 0);
+hash: end marker in the wrong place ||| tail[used] = 0x80; ||| tail[used + 1] = 0x80;
+hash: no room left for the length ||| used < 56 ? 64 : 128 ||| used <= 56 ? 64 : 128
+hash: length in bytes, not bits ||| bits = total * 8; ||| bits = total;
+hash: a round constant wrong ||| core.SHA_K = [0x428a2f98, ||| core.SHA_K = [0x428a2f99,
+hash: a rotation wrong ||| ((e >>> 6) | (e << 26)) ||| ((e >>> 6) | (e << 25))
+hash: schedule added without carry ||| W[i] = (W[i - 16] + s0 + W[i - 7] + s1) | 0; ||| W[i] = (W[i - 16] ^ s0 ^ W[i - 7] ^ s1) | 0;
+hash: a word's bytes in the wrong order ||| (lo >>> (24 - 8 * k)) & 255 ||| (lo >>> (8 * k)) & 255
+frames: times not scaled by the length ||| at.map((k) => k * duration) ||| at.map((k) => k)
+frames: an endless video accepted ||| Number.isFinite(duration) && duration > 0 ? ||| duration > 0 ?
+vote: one frame of three enough ||| if (2 * n[top] <= frames.length) ||| if (n[top] < 1)
+vote: half is enough ||| if (2 * n[top] <= frames.length) ||| if (2 * n[top] < frames.length)
+vote: reason from the wrong frame ||| frames.find((f) => f.category === top).reason ||| frames[0].reason
+vote: disagreeing frames go to the first ||| return { category: stay, reason: 'frames disagree: ' ||| return { category: frames[0].category, reason: 'frames disagree: '
+mean: first frame only ||| for (const v of vecs) for ||| for (const v of vecs.slice(0, 1)) for
+mean: summed, not averaged ||| m[i] += v[i] / vecs.length; ||| m[i] += v[i];
 rules: best person left out of other ||| if (ob.people && ob.people.best) notes.push ||| if (false) notes.push
 objects: area from the width alone ||| const area = d.w * d.h; ||| const area = d.w;
 norm: part corner ignored ||| x: (d.x + ox) / W, y: (d.y + oy) / H, ||| x: d.x / W, y: d.y / H,
@@ -131,7 +151,7 @@ ahead: no refill ||| const r = await pending.shift();\n    fill(); ||| const r =
 copy: listed names ignored ||| if ((opts.existing && opts.existing.has(name)) || ||| if (false ||
 copy: no lookup in the target ||| || await core.exists(toDir, name)) { ||| ) {
 copy: reads back the original ||| const copy = await dst.getFile(); ||| const copy = await src.getFile();
-copy: hashes the original twice ||| log.copySha256 = await core.sha256(copy); ||| log.copySha256 = await core.sha256(orig);
+copy: hashes the original twice ||| log.copySha256 = await core.sha256(copy, ||| log.copySha256 = await core.sha256(orig,
 copy: size check skipped ||| if (copy.size !== orig.size) { log.reason ||| if (false) { log.reason
 copy: hash check skipped ||| if (log.copySha256 !== log.sha256) { log.reason = 'SHA-256 differs'; return log; } ||| if (false) { log.reason = 'SHA-256 differs'; return log; }
 copy: mismatch carries on ||| log.reason = 'SHA-256 differs'; return log; } ||| log.reason = 'SHA-256 differs'; }
