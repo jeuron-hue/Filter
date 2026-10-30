@@ -1293,6 +1293,58 @@ test('a video frame the browser refuses at first is tried again a little later; 
   await ctx.close();
 });
 
+test('the screen is kept on while filter works; a video read while filter left the screen is read again', async () => {
+  const { ctx, page } = await newApp();
+  await openCamera(page);
+  await page.evaluate(() => {
+    // A stand-in for the browser's screen lock, and a way to send filter off screen and back.
+    // Like the phone, the browser lets go of the lock when filter leaves the screen.
+    window.__locks = [];
+    Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request: async (type) => {
+      const l = new EventTarget(); l.type = type; l.released = false;
+      l.release = async () => { if (!l.released) { l.released = true; l.dispatchEvent(new Event('release')); } };
+      window.__locks.push(l); return l;
+    } } });
+    let vis = 'visible';
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => vis });
+    window.__setVis = (v) => {
+      vis = v;
+      if (v === 'hidden') for (const l of window.__locks) l.release();
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    // Gary leaves filter while the first video is read: that frame is refused (the
+    // browser stops decoding off screen); he comes back 300 ms later.
+    const real = window.createImageBitmap;
+    window.__videoGrabs = 0;
+    window.createImageBitmap = (src, ...rest) => {
+      if (src instanceof HTMLVideoElement && window.__videoGrabs++ === 0) {
+        window.__setVis('hidden');
+        setTimeout(() => window.__setVis('visible'), 300);
+        return Promise.reject(new DOMException('The image source is not usable.', 'InvalidStateError'));
+      }
+      return real(src, ...rest);
+    };
+    window.__heldDuringRun = false;
+    const o = window.filter.recog.override;
+    window.filter.recog.override = (e, b) => { if (window.__locks.some((l) => !l.released)) window.__heldDuringRun = true; return o(e, b); };
+  });
+  await sort(page);
+  const r = await page.evaluate(() => ({
+    v1: window.filter.state.plan.find((p) => p.name === 'PXL_20261029_095200000.webm'),
+    v2: window.filter.state.plan.find((p) => p.name === 'PXL_20261029_095100000.webm').category,
+    grabs: window.__videoGrabs, locks: window.__locks.map((l) => [l.type, l.released]), held: window.__heldDuringRun,
+    caps: [...document.querySelectorAll('.awake-cap')].map((c) => c.textContent),
+  }));
+  eq([r.v1.category, r.v1.reason, r.v1.frames.map((f) => f.sure)], ['people', '2 of 3 frames people: 1 face, 0.90', [true, true, true]], 'the video caught off screen was read again whole');
+  eq(r.v2, 'other', 'the next video as before');
+  eq(r.grabs, 10, 'the first video read twice (1 refused + 3 thrown away, then 3), the second once (3)');
+  assert(r.held, 'the screen lock was held while the models worked');
+  eq(r.locks, [['screen', true], ['screen', true]], 'taken at the start, given up off screen, taken again on return, and let go when the run ended');
+  eq(r.caps[0], 'The screen stays on while filter works. If you leave filter, it waits and carries on when you come back.', 'the run screen says so');
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
 test('review: tapping a photo and choosing a folder sends it there, marked in amber', async () => {
   const { ctx, page } = await newApp();
   await openCamera(page);
