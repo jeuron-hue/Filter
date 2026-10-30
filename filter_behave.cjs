@@ -1283,6 +1283,12 @@ test('a video frame the browser refuses at first is tried again a little later; 
   const at = await page.evaluate(() => window.__refused.map((r) => r.at));
   eq(at.length, 6, 'three tries for the first frame of each video, then it gives up');
   assert(Math.abs(at[1] - at[0] - 0.1) < 0.02 && Math.abs(at[2] - at[0] - 0.2) < 0.02, 'each try 0.1 s later: ' + at.join(', '));
+  // A browser that cannot say which frame it shows: the frames are still taken, and marked.
+  await page.click('#btn-restart'); await page.click('#btn-restart');
+  await page.evaluate(() => { window.__refuse = 'never'; delete HTMLVideoElement.prototype.requestVideoFrameCallback; });
+  await sort(page);
+  const line = (await page.evaluate(() => window.filter.runDetails())).split('\n').find((l) => l.startsWith('PXL_20261029_095200000.webm'));
+  assert(/^PXL_20261029_095200000\.webm ▸ people: 2 of 3 frames people: .* \[frames: 0\.1 s \(frame not confirmed\) people, /.test(line), 'unconfirmed frames said so: ' + line);
   assert(page.errors.length === 0, page.errors.join('; '));
   await ctx.close();
 });
@@ -1311,6 +1317,66 @@ test('review: tapping a photo and choosing a folder sends it there, marked in am
   await page.click('.group[data-category="pets"] .ph');
   await page.click('#sheet-cancel');
   eq((await plan(page)).pets.length, 2, 'cancel changes nothing');
+  await ctx.close();
+});
+
+test('review: a long press starts picking several, taps add and leave out, Send to puts them all in one folder', async () => {
+  const { ctx, page } = await newApp();
+  await openCamera(page);
+  await sort(page);
+  const tile = (name) => page.evaluate((n) => window.filter.state.plan.findIndex((p) => p.name === n), name).then((i) => '.ph[data-index="' + i + '"]');
+  const press = async (sel, ms = 700) => {
+    await page.evaluate((s) => document.querySelector(s).scrollIntoView({ block: 'center' }), sel);
+    const b = await page.locator(sel).boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.down(); await page.waitForTimeout(ms); await page.mouse.up();
+  };
+  const bar = () => page.evaluate(() => ({
+    picked: [...document.querySelectorAll('.ph.picked')].map((b) => window.filter.state.plan[b.dataset.index].name).sort(),
+    edge: document.querySelector('#bar-edge').textContent,
+    shown: ['#btn-restart', '#btn-copy', '#btn-pick-cancel', '#btn-pick-send'].filter((s) => !document.querySelector(s).hidden),
+    sheet: !document.querySelector('#sheet').hidden,
+    small: [...document.querySelectorAll('button')].filter((b) => b.offsetParent && (b.offsetWidth < 44 || b.offsetHeight < 44)).map((b) => b.id || b.textContent),
+  }));
+  const pizza = await tile('PXL_20261029_100800000.jpg'), sea = await tile('PXL_20261029_100700000.jpg'), clip = await tile('PXL_20261029_095200000.webm');
+  await press(sea, 200);
+  let r = await bar();
+  eq([r.picked, r.sheet], [[], true], 'a short press is a tap: the sheet for that one');
+  await page.click('#sheet-cancel');
+  await press(pizza);
+  r = await bar();
+  eq([r.picked, r.edge, r.shown, r.sheet], [['PXL_20261029_100800000.jpg'], '1 photo picked', ['#btn-pick-cancel', '#btn-pick-send'], false], 'a long press picks it, no sheet');
+  eq(r.small, [], 'tap targets while picking');
+  await page.click(sea); await page.click(clip);
+  r = await bar();
+  eq([r.picked, r.edge], [['PXL_20261029_095200000.webm', 'PXL_20261029_100700000.jpg', 'PXL_20261029_100800000.jpg'], '2 photos, 1 video picked'], 'taps pick more');
+  await page.click(sea);
+  eq((await bar()).picked, ['PXL_20261029_095200000.webm', 'PXL_20261029_100800000.jpg'], 'a tap on a picked one leaves it out');
+  await page.click('#btn-pick-send');
+  const sheet = await page.evaluate(() => ({ name: document.querySelector('#sheet-name').textContent, why: document.querySelector('#sheet-why').textContent,
+    pressed: [...document.querySelectorAll('#sheet-targets button')].filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.dataset.category) }));
+  eq(sheet, { name: '1 photo, 1 video picked', why: 'All of them go to the folder you choose.', pressed: [] }, 'the sheet for several, from two folders');
+  await page.click('#sheet-targets button[data-category="scenery"]');
+  const p = await plan(page);
+  eq(p.scenery.slice().sort(), ['PXL_20261029_095200000.webm', 'PXL_20261029_100700000.jpg', 'PXL_20261029_100800000.jpg'], 'both sent to scenery');
+  eq(p.food, undefined, 'food now empty');
+  r = await bar();
+  eq([r.picked, r.shown, r.edge], [[], ['#btn-restart', '#btn-copy'], '10 photos, 3 videos ▸ 3 stay'], 'picking ends');
+  eq(await page.evaluate(() => document.querySelectorAll('.ph.changed').length), 2, 'both marked as changed');
+  // Cancel, and leaving out the last one, end picking with nothing changed.
+  await press(sea);
+  eq((await bar()).picked, ['PXL_20261029_100700000.jpg'], 'picking again');
+  await page.click('#btn-pick-cancel');
+  r = await bar();
+  eq([r.picked, r.shown], [[], ['#btn-restart', '#btn-copy']], 'cancel ends picking');
+  await press(sea);
+  eq((await bar()).shown, ['#btn-pick-cancel', '#btn-pick-send'], 'picking again');
+  await page.click(sea);
+  eq((await bar()).shown, ['#btn-restart', '#btn-copy'], 'leaving out the last one ends picking');
+  eq((await plan(page)).scenery.length, 3, 'nothing changed by cancelling');
+  await page.click(sea);
+  eq([(await bar()).sheet, await text(page, '#sheet-name')], [true, 'PXL_20261029_100700000.jpg'], 'a tap opens the sheet for one again');
+  assert(page.errors.length === 0, page.errors.join('; '));
   await ctx.close();
 });
 
@@ -1343,6 +1409,7 @@ test('copy: every copy lands in its folder byte-identical, originals untouched, 
   eq(log.items.find((x) => x.name === 'PXL_20261029_095200000.webm').kind, 'video', 'a copied video logged as one');
   const vd = log.decisions.find((x) => x.name === 'PXL_20261029_095100000.webm');
   eq([vd.kind, vd.folder, vd.frames.map((f) => f.category)], ['video', 'other', ['people', 'other', 'pets']], 'what each frame said is logged');
+  eq(vd.frames.map((f) => f.sure), [true, true, true], 'each frame confirmed shown at its time');
   assert(vd.frames.every((f, i) => Math.abs(f.at - [0.1, 0.5, 0.9][i] * vd.frames[2].at / 0.9) < 0.01) && vd.frames[2].at > 1, 'frames at 10, 50 and 90 % of the length: ' + vd.frames.map((f) => f.at).join(', '));
   for (const it of log.items) {
     eq([it.ok, it.sha256, it.copySha256, it.from], [true, before[it.name], before[it.name], '.'], it.name + ' logged with its hashes');
