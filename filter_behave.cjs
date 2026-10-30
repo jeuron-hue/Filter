@@ -1474,7 +1474,7 @@ test('copy: every copy lands in its folder byte-identical, originals untouched, 
   eq(await text(page, '#done-title'), 'Done', 'title');
   await page.click('#btn-details');
   await page.waitForSelector('#notice:not([hidden])');
-  const clip = await page.evaluate(() => navigator.clipboard.readText());
+  const clip = await page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, '\n'));
   const lines = clip.split('\n');
   assert(new RegExp('^filter v' + VERSION.replace(/\./g, '\\.') + ' run \\d\\d/\\d\\d/\\d\\d \\d{4} hrs, 10 photos, 3 videos, [\\d.]+ s per photo, [\\d.]+ s per video, ').test(lines[0]), 'details header: ' + lines[0]);
   eq(lines.length, 14, 'a line per photo and video');
@@ -1496,7 +1496,7 @@ test('run details can be copied from the review, before anything is copied', asy
   await page.click('#sheet-targets button[data-category="food"]');
   await page.click('#btn-review-details');
   await page.waitForSelector('#notice:not([hidden])');
-  const clip = await page.evaluate(() => navigator.clipboard.readText());
+  const clip = await page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, '\n'));
   const lines = clip.split('\n');
   assert(/^filter v[\d.]+ run \d\d\/\d\d\/\d\d \d{4} hrs, 10 photos, 3 videos, /.test(lines[0]), 'header: ' + lines[0]);
   eq(lines.length, 14, 'a line per photo and video');
@@ -1529,7 +1529,7 @@ test('a re-check includes photos already sorted, copies nothing, and says where 
   eq(r, { copy: true, edge: 're-check ▸ 4 photos ▸ nothing copied', cap: 'A re-check: nothing will be copied. Copy the run details to compare.' }, 'nothing can be copied');
   await page.click('#btn-review-details');
   await page.waitForSelector('#notice:not([hidden])');
-  const lines = (await page.evaluate(() => navigator.clipboard.readText())).split('\n');
+  const lines = (await page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, '\n'))).split('\n');
   assert(/^filter v[\d.]+ re-check /.test(lines[0]), 'marked as a re-check: ' + lines[0]);
   assert(lines.includes('PXL_20261029_101000000.jpg ▸ people: 3 people, 0.70 (closer look) [already in people]'), 'where it already is');
   assert(lines.includes('PXL_20261029_100700000.jpg ▸ scenery: seashore 0.30, scenery 0.40'), 'not yet sorted: no mark');
@@ -1836,7 +1836,7 @@ test('by example: copies land in folders named like the examples, unsure stays, 
   assert(/ per photo, by example$/.test(d.Recognition), 'recognition row: ' + d.Recognition);
   await page.click('#btn-details');
   await page.waitForSelector('#notice:not([hidden])');
-  const lines = (await page.evaluate(() => navigator.clipboard.readText())).split('\n');
+  const lines = (await page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, '\n'))).split('\n');
   assert(new RegExp('^filter v' + VERSION.replace(/\./g, '\\.') + ' run by example \\d\\d/\\d\\d/\\d\\d \\d{4} hrs, 6 photos, [\\d.]+ s per photo, examples blue sky 3, green 2, red 4, bars 0\\.40 and gap 0\\.05$').test(lines[0]), 'header: ' + lines[0]);
   eq(lines.length, 7, 'a line per photo');
   assert(lines.some((l) => /^PXL_20261030_100300000\.jpg ▸ blue sky \(filter said unsure\): too close to call: (red|blue sky) 0\.(49|50|51) .*, next (red|blue sky) 0\.(49|50|51)$/.test(l)), 'changed photo with both numbers');
@@ -1860,7 +1860,7 @@ test('by example: photos copied by either mode count as sorted; a re-check takes
   eq(Object.values(await plan(page)).flat().length, 6, 'a re-check takes all 6');
   await page.click('#btn-review-details');
   await page.waitForSelector('#notice:not([hidden])');
-  const lines = (await page.evaluate(() => navigator.clipboard.readText())).split('\n');
+  const lines = (await page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, '\n'))).split('\n');
   assert(/^filter v[\d.]+ re-check by example /.test(lines[0]), 'header: ' + lines[0]);
   assert(lines.some((l) => /^PXL_20261030_100500000\.jpg ▸ green: .* \[already in people\]$/.test(l)), 'already in people');
   assert(lines.some((l) => /^PXL_20261030_100600000\.jpg ▸ red: .* \[already in red\]$/.test(l)), 'already in red');
@@ -1950,7 +1950,7 @@ test('by example: a video is compared with the example videos only, its frames a
   eq(log.result, { copied: 6, skipped: 0, stayed: 3, stopped: null }, 'log result');
   await page.click('#btn-details');
   await page.waitForSelector('#notice:not([hidden])');
-  const lines = (await page.evaluate(() => navigator.clipboard.readText())).split('\n');
+  const lines = (await page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, '\n'))).split('\n');
   assert(/^filter v[\d.]+ run by example \d\d\/\d\d\/\d\d \d{4} hrs, 6 photos, 3 videos, [\d.]+ s per photo, [\d.]+ s per video, examples blue sky 3 \+ 1 video, green 2, red 4 \+ 1 video, bars 0\.40 and gap 0\.05, for videos 0\.32 and 0\.05$/.test(lines[0]), 'header: ' + lines[0]);
   eq(lines.length, 10, 'a line per file');
   assert(page.errors.length === 0, page.errors.join('; '));
