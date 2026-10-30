@@ -18,7 +18,7 @@ for byte (size and SHA-256). filter never deletes or overwrites anything, and
 never writes to filter-examples/. Each run writes a log to filter-logs/ in the
 picked folder.
 
-APP_VERSION 0.2.0 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.2.1 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -342,7 +342,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.2.1';
 
 // The folders filter knows, in the order they are shown. Photos in "other"
 // stay where they are: nothing is copied for them.
@@ -397,7 +397,10 @@ const RULES = {
   screenLong: 1600,     // ... and a long side of at least this many pixels
   text: { bright: 0.5, darkMin: 0.02, darkMax: 0.3, satMax: 0.18, edgeMin: 0.04 },
   // By example: a photo's score for a folder is its cosine similarity to that folder's closest example.
-  minSim: 0.5,          // the best folder must score at least this, or the photo is unsure (like nothing)
+  minSim: 0.35,         // the best folder must score at least this, or the photo is unsure (like nothing).
+                        // From Gary's first two runs (30/10/26): photos of his named sets with no example from
+                        // their shoot mostly scored 0.33 to 0.50; at 0.35 the 7 of them that could be checked
+                        // among run 2's unsure photos are all placed right.
   minGap: 0.05,         // ... and beat the runner-up folder by at least this, or it is unsure (torn between two)
 };
 
@@ -971,6 +974,7 @@ const state = {
   stay: STAY,         // the run's folder that is not copied: "other" or "unsure"
   exampleUse: [],     // by example: per folder, the examples used and any that failed
   exampleOf: new Map(), // by example: photo name -> the example folder holding a photo of that name
+  newestTyped: null,  // how many newest photos Gary typed, kept for the session; null: the default
   plan: [],           // one item per photo: { name, handle, category, first, reason, thumb, score }
   stopRequested: false,
   recheck: false,     // a re-check run: photos already sorted included, nothing copied
@@ -1194,7 +1198,9 @@ function setupChoice() {
     : 'Copies go into subfolders here: people, pets, food, screenshots, documents, scenery. Photos in "other" stay where they are. Nothing is moved or deleted.';
   const recheck = $('#recheck').checked;
   const can = recheck ? state.photos.length : state.fresh;
-  $('#newest').value = Math.min(config.newest, Math.max(1, can));
+  // The number Gary typed is kept when the switches change (he asked, 30/10/26); it
+  // is only shown smaller while fewer photos than that are there to take.
+  $('#newest').value = Math.min(state.newestTyped || config.newest, Math.max(1, can));
   $('#btn-sort').disabled = can === 0;
   $('#btn-sort').textContent = recheck ? 'Re-check photos' : 'Sort photos';
   $('#setup-note').textContent = can ? '' : state.photos.length ? 'Every photo here is already sorted. Re-check them with the switch above.' : 'No photos in this folder.';
@@ -1646,6 +1652,7 @@ async function copyDetails(panel, pre) {
 $('#btn-details').addEventListener('click', () => copyDetails($('#done-details'), $('#details-text')));
 $('#btn-review-details').addEventListener('click', () => copyDetails($('#review-details'), $('#review-details-text')));
 $('#recheck').addEventListener('change', setupChoice);
+$('#newest').addEventListener('input', () => { const v = Math.round(+$('#newest').value); state.newestTyped = v >= 1 ? Math.min(v, config.maxNewest) : null; });
 $('#by-description').addEventListener('click', () => rememberBy('description'));
 $('#by-example').addEventListener('click', () => rememberBy('example'));
 
