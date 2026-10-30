@@ -18,7 +18,7 @@ for byte (size and SHA-256). filter never deletes or overwrites anything, and
 never writes to filter-examples/. Each run writes a log to filter-logs/ in the
 picked folder.
 
-APP_VERSION 0.2.1 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.2.2 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -342,7 +342,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.2.1';
+const APP_VERSION = '0.2.2';
 
 // The folders filter knows, in the order they are shown. Photos in "other"
 // stay where they are: nothing is copied for them.
@@ -397,10 +397,10 @@ const RULES = {
   screenLong: 1600,     // ... and a long side of at least this many pixels
   text: { bright: 0.5, darkMin: 0.02, darkMax: 0.3, satMax: 0.18, edgeMin: 0.04 },
   // By example: a photo's score for a folder is its cosine similarity to that folder's closest example.
-  minSim: 0.35,         // the best folder must score at least this, or the photo is unsure (like nothing).
-                        // From Gary's first two runs (30/10/26): photos of his named sets with no example from
-                        // their shoot mostly scored 0.33 to 0.50; at 0.35 the 7 of them that could be checked
-                        // among run 2's unsure photos are all placed right.
+  minSim: 0.32,         // the best folder must score at least this, or the photo is unsure (like nothing).
+                        // From Gary's first three runs (30/10/26): suited and close-up photos with no example
+                        // from their shoot scored down to 0.33; the highest photo of nothing in the folders
+                        // (a lift sign) 0.29. A thin margin, fitted to 100 photos: watch it on new days.
   minGap: 0.05,         // ... and beat the runner-up folder by at least this, or it is unsure (torn between two)
 };
 
