@@ -14,6 +14,7 @@
 //     log, never filter-examples/ (Gary's examples are read only)
 //   - the sorting rules' label names match the labels inside the two models
 //   - every image in the repo carries no EXIF, XMP, IPTC, GPS or text chunks
+//   - CHANGELOG.md has an entry for this version, newest first
 //
 // Run: node filter_checks.cjs
 // Pattern and metadata parser from retouch_checks.cjs (jeuron-hue/retouch).
@@ -34,7 +35,7 @@ const APP_SOURCE = ['filter.html', 'index.html', 'sw.js', 'manifest.webmanifest'
 // minimum; the rest is docs and the test suites.
 const ALLOWED_TOP = new Set([
   'filter.html', 'index.html', 'manifest.webmanifest', 'sw.js', 'icons', 'vendor',
-  'README.md', 'CLAUDE.md', '.gitignore', '.git', 'package.json', 'package-lock.json',
+  'README.md', 'CLAUDE.md', 'CHANGELOG.md', '.gitignore', '.git', 'package.json', 'package-lock.json',
   'filter_checks.cjs', 'filter_behave.cjs', 'filter_mutate.sh',
   'reference', 'node_modules', // both gitignored
 ]);
@@ -197,7 +198,7 @@ function runChecks() {
   const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
 
   check('required files present', () => {
-    const req = [...APP_SOURCE, 'README.md', 'CLAUDE.md', '.gitignore', 'package.json', 'filter_checks.cjs', 'filter_behave.cjs', 'filter_mutate.sh'];
+    const req = [...APP_SOURCE, 'README.md', 'CLAUDE.md', 'CHANGELOG.md', '.gitignore', 'package.json', 'filter_checks.cjs', 'filter_behave.cjs', 'filter_mutate.sh'];
     const missing = req.filter((f) => !exists(f));
     assert(!missing.length, 'missing: ' + missing.join(', '));
   });
@@ -441,6 +442,18 @@ function runChecks() {
     return 'v' + app;
   });
 
+  // Every release adds its entry to CHANGELOG.md in the same commit as the
+  // version bump: the newest entry must be the version the app says it is.
+  check('CHANGELOG.md: newest entry is APP_VERSION, entries newest first', () => {
+    const app = (read('filter.html').match(/const APP_VERSION = '([^']+)'/) || [])[1];
+    const vs = Array.from(read('CHANGELOG.md').matchAll(/^## v(\d+)\.(\d+)\.(\d+), \d\d\/\d\d\/\d\d, F\d\b/gm)).map((m) => m.slice(1, 4).map(Number));
+    assert(vs.length, 'no entries headed "## vX.Y.Z, dd/mm/yy, F<n>"');
+    assert(vs[0].join('.') === app, 'newest entry is v' + vs[0].join('.') + ' but APP_VERSION is ' + app);
+    const before = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+    for (let i = 1; i < vs.length; i++) assert(before(vs[i - 1], vs[i]) > 0, 'v' + vs[i - 1].join('.') + ' is not newer than v' + vs[i].join('.'));
+    return vs.length + ' versions';
+  });
+
   check('manifest: standalone, relative start, icons', () => {
     const m = JSON.parse(read('manifest.webmanifest'));
     assert(m.display === 'standalone', 'display must be standalone');
@@ -476,7 +489,7 @@ function runChecks() {
   });
 
   check('no em dashes in docs or UI text', () => {
-    const bad = ['README.md', 'CLAUDE.md', 'filter.html', 'manifest.webmanifest'].filter((f) => read(f).includes('\u2014'));
+    const bad = ['README.md', 'CLAUDE.md', 'CHANGELOG.md', 'filter.html', 'manifest.webmanifest'].filter((f) => read(f).includes('\u2014'));
     assert(!bad.length, 'em dash in: ' + bad.join(', '));
   });
 
