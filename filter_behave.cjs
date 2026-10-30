@@ -12,8 +12,10 @@
 // disk that changes a byte, a short write, a write that fails part way, a
 // listing that stalls. Every picture is synthetic (coloured shapes, a page of
 // text, screen-sized PNGs, planted camera data and previews); no real photo is
-// used. The two models are swapped for a stand-in that answers by file name, so
-// where each photo lands can be checked exactly; one test runs the real models.
+// used. The models are swapped for a stand-in that answers by file name, so
+// where each photo lands can be checked exactly; by example (F2), the stand-in
+// embedder turns each picture into its colour, so the closest folder is plain
+// arithmetic. Two tests run the real models.
 //
 // Run:            node filter_behave.cjs
 // Core only:      FILTER_ONLY=core node filter_behave.cjs   (used by filter_mutate.sh)
@@ -207,6 +209,64 @@ function pageFixtures() {
       await this.put(cam, '.trashed-1767225600-PXL_20261001_090000000.jpg', await this.picture(9));
       await this.put(cam, 'notes.txt', new TextEncoder().encode('not a photo'));
       return cam;
+    },
+    // By example (F2): the camera folder with Gary's example folders in
+    // filter-examples/, each a few pictures of one flat colour. The stand-in
+    // embedder (colourVec) turns a picture into its average colour less its grey
+    // level, so how close two pictures are is plain arithmetic on their colours:
+    // two reds point the same way (1.00), red and green apart (-0.50), and
+    // magenta lies exactly between red and blue (0.50 to each).
+    async exampleCamera() {
+      const cam = await this.dir('DCIM/Camera');
+      const ex = await this.dir('DCIM/Camera/filter-examples');
+      const A = window.__answers = {};
+      const flat = (colour) => this.picture(0, { flat: colour });
+      const folder = async (name, colours) => {
+        const d = await ex.getDirectoryHandle(name, { create: true });
+        for (const [i, c] of colours.entries()) await this.put(d, name.replace(/\W/g, '') + '_' + (i + 1) + '.jpg', await flat(c));
+        return d;
+      };
+      const red = await folder('red', ['#ff0000', '#e00000', '#c00000']);
+      await folder('green', ['#00ff00', '#00d000']);                       // only 2: still used, flagged
+      await folder('blue sky', ['#0000ff', '#0000e0', '#0000c0']);        // a name with a space
+      await folder('Unsure', ['#ff0000']);                                 // filter's own name: not used
+      await ex.getDirectoryHandle('empty', { create: true });              // no photos: not used
+      await this.put(ex, 'stray.jpg', await flat('#ff0000'));              // a loose file: ignored
+      const photo = async (name, colour, answer) => {
+        await this.put(cam, name, await this.withExif(await flat(colour)));
+        if (answer) A[name] = answer;
+      };
+      await photo('PXL_20261030_100600000.jpg', '#c83030');                // a red
+      await photo('PXL_20261030_100500000.jpg', '#30c830');                // a green
+      await photo('PXL_20261030_100400000.jpg', '#3030c8');                // a blue
+      await photo('PXL_20261030_100300000.jpg', '#ff00ff');                // magenta: torn between red and blue
+      await photo('PXL_20261030_100200000.jpg', '#808080', { vec: [1, 1, 1] });   // no colour at all: like nothing
+      // A camera photo that is itself an example (Gary copied it into red/).
+      const same = await this.withExif(await flat('#d01010'));
+      await this.put(cam, 'PXL_20261030_100100000.jpg', same);
+      await this.put(red, 'PXL_20261030_100100000.jpg', same);
+      return cam;
+    },
+    // A picture's average colour less its grey level: the stand-in embedder.
+    colourVec(bmp) {
+      const c = new OffscreenCanvas(16, 16), x = c.getContext('2d', { willReadFrequently: true });
+      x.drawImage(bmp, 0, 0, 16, 16);
+      const d = x.getImageData(0, 0, 16, 16).data, m = [0, 0, 0];
+      for (let i = 0; i < d.length; i += 4) for (let k = 0; k < 3; k++) m[k] += d[i + k] / 256;
+      const g = (m[0] + m[1] + m[2]) / 3;
+      return m.map((v) => v - g);
+    },
+    // A drawn pattern for the real embedder: stripes, checks, rings or dots in one hue.
+    async pattern(kind, hue, seed) {
+      const c = new OffscreenCanvas(512, 384), x = c.getContext('2d');
+      let s = seed; const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
+      x.fillStyle = 'hsl(' + hue + ',40%,85%)'; x.fillRect(0, 0, 512, 384);
+      x.fillStyle = x.strokeStyle = 'hsl(' + hue + ',70%,40%)';
+      if (kind === 'stripes') { const w = 18 + rnd() * 10; for (let y = 0; y < 384; y += 2 * w) x.fillRect(0, y, 512, w); }
+      if (kind === 'checks') { const w = 30 + rnd() * 20; for (let y = 0; y < 384; y += w) for (let i = 0; i < 512; i += w) if (((y + i) / w) % 2 < 1) x.fillRect(i, y, w, w); }
+      if (kind === 'rings') { const cx = 200 + rnd() * 100, cy = 150 + rnd() * 80; x.lineWidth = 14; for (let r = 20; r < 400; r += 40) { x.beginPath(); x.arc(cx, cy, r, 0, 7); x.stroke(); } }
+      if (kind === 'dots') { for (let i = 0; i < 60; i++) { x.beginPath(); x.arc(rnd() * 512, rnd() * 384, 8 + rnd() * 10, 0, 7); x.fill(); } }
+      return c.convertToBlob({ type: 'image/jpeg', quality: 0.9 });
     },
     // A big folder of empty files: photos, videos, hidden and other in the given numbers.
     async big(p, n) {
@@ -769,6 +829,82 @@ test('mapAhead keeps order, never runs more than depth ahead, stops on request, 
   await ctx.close();
 }, { core: true });
 
+/* ---------- Core: by example ---------- */
+
+test('cosine: same way 1, opposite -1, at right angles 0, all-zero 0, length does not matter', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const c = window.filter.core.cosine;
+    return [c([1, 2, 3], [2, 4, 6]), c([1, 0], [-3, 0]), c([1, 0], [0, 5]), c([0, 0], [1, 1]), c([1, 1], [0, 0]), c([3, 4], [4, 3]), c([1, 0, 0], [1, 1, 0])];
+  });
+  eq(r, [1, -1, 0, 0, 0, 0.96, 0.7071067811865475], 'cosines');
+  await ctx.close();
+}, { core: true });
+
+test('nearest: the closest example decides, each bar at its edge, unsure when like nothing or torn, reasons give best and runner-up', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const { core } = window.filter;
+    const A = { name: 'receipts', examples: [{ name: 'a1.jpg', vec: [1, 0, 0] }, { name: 'a2.jpg', vec: [0.6, 0.8, 0] }] };
+    const B = { name: 'hawker food', examples: [{ name: 'b1.jpg', vec: [0, 1, 0] }] };
+    const C = { name: 'cats', examples: [{ name: 'c1.jpg', vec: [0, 0, 1] }] };
+    const rules = { minSim: 0.5, minGap: 0.05 };
+    const v = [0.6, 0, 0.8];                 // 0.80 from cats, 0.60 from receipts (a1), 0 from hawker food
+    const top = core.cosine(v, C.examples[0].vec), second = core.cosine(v, A.examples[0].vec);
+    const pick = (x) => [x.category, x.reason];
+    return {
+      plain: pick(core.nearest([1, 0, 0], [A, B, C], rules)),
+      // the folder's closest example counts, not its first: a2 matches exactly, a1 only 0.6, hawker food 0.8
+      closest: pick(core.nearest([0.6, 0.8, 0], [A, B, C], rules)),
+      simEdge: pick(core.nearest(v, [A, B, C], { minSim: top, minGap: 0.05 })),
+      simOver: pick(core.nearest(v, [A, B, C], { minSim: top + 1e-9, minGap: 0.05 })),
+      gapEdge: pick(core.nearest(v, [A, B, C], { minSim: 0.5, minGap: top - second })),
+      gapOver: pick(core.nearest(v, [A, B, C], { minSim: 0.5, minGap: top - second + 1e-9 })),
+      torn: pick(core.nearest([1, 1, 0], [{ name: 'x', examples: [{ name: 'x.jpg', vec: [1, 0, 0] }] }, { name: 'y', examples: [{ name: 'y.jpg', vec: [0, 1, 0] }] }], rules)),
+      alone: pick(core.nearest([1, 0.2, 0], [A], rules)),
+      none: pick(core.nearest([1, 0, 0], [], rules)),
+      empty: pick(core.nearest([1, 0, 0], [{ name: 'x', examples: [] }], rules)),
+      emptyBeside: pick(core.nearest([1, 0, 0], [{ name: 'x', examples: [] }, A], rules)),
+      best: core.nearest([1, 0, 0], [A, B, C], rules).best,
+      next: core.nearest([0.6, 0.8, 0], [A, B, C], rules).next,
+      defaults: [window.filter.RULES.minSim, window.filter.RULES.minGap],
+    };
+  });
+  eq(r.plain, ['receipts', 'receipts 1.00 (like a1.jpg), next hawker food 0.00'], 'nearest folder; a tie for runner-up keeps folder order');
+  eq(r.closest, ['receipts', 'receipts 1.00 (like a2.jpg), next hawker food 0.80'], 'a folder scores by its closest example');
+  eq(r.simEdge, ['cats', 'cats 0.80 (like c1.jpg), next receipts 0.60'], 'exactly at minSim is enough');
+  eq(r.simOver, ['unsure', 'nothing close: cats 0.80 (like c1.jpg), next receipts 0.60'], 'under minSim: unsure');
+  eq(r.gapEdge, ['cats', 'cats 0.80 (like c1.jpg), next receipts 0.60'], 'a gap of exactly minGap is enough');
+  eq(r.gapOver, ['unsure', 'too close to call: cats 0.80 (like c1.jpg), next receipts 0.60'], 'a gap under minGap: unsure');
+  eq(r.torn, ['unsure', 'too close to call: x 0.71 (like x.jpg), next y 0.71'], 'halfway between two folders');
+  eq(r.alone, ['receipts', 'receipts 0.98 (like a1.jpg), no other folder'], 'one folder: no gap to check');
+  eq(r.none, ['unsure', 'no examples to compare with'], 'no folders');
+  eq(r.empty, ['unsure', 'no examples to compare with'], 'a folder with no examples');
+  eq(r.emptyBeside, ['receipts', 'receipts 1.00 (like a1.jpg), no other folder'], 'a folder with no examples is not a runner-up');
+  eq(r.best, { folder: 'receipts', score: 1, example: 'a1.jpg' }, 'best kept for the details');
+  eq(r.next, { folder: 'hawker food', score: 0.8, example: 'b1.jpg' }, 'runner-up kept for the details');
+  eq(r.defaults, [0.5, 0.05], 'starting bars');
+  await ctx.close();
+}, { core: true });
+
+test('exampleProblem keeps filter\'s own names and hidden folders out; leastSureFirst puts the doubtful first', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const { core } = window.filter;
+    const items = [{ n: 'a', score: 0.9 }, { n: 'b', score: 0.2 }, { n: 'c', score: null }, { n: 'd', score: 0.2 }, { n: 'e', score: 0.5 }];
+    const sorted = core.leastSureFirst(items);
+    return {
+      names: ['receipts', 'hawker food', 'people', 'Other', 'UNSURE', 'filter-logs', 'Filter-Examples', '.thumbnails'].map(core.exampleProblem),
+      order: sorted.map((x) => x.n), untouched: items.map((x) => x.n),
+    };
+  });
+  const own = 'a name filter keeps for itself';
+  eq(r.names, [null, null, null, own, own, own, own, 'hidden'], 'example folder names');
+  eq(r.order, ['c', 'b', 'd', 'e', 'a'], 'no score first, then lowest first, ties in their order');
+  eq(r.untouched, ['a', 'b', 'c', 'd', 'e'], 'the list given is not changed');
+  await ctx.close();
+}, { core: true });
+
 /* ---------- Core: the safe copy ---------- */
 
 // Runs core.safeCopy in the page on a fresh A -> A/to pair holding one file of
@@ -1206,6 +1342,239 @@ test('start over needs two taps', async () => {
   await ctx.close();
 });
 
+/* ---------- App: by example (F2) ---------- */
+
+// Seed the camera folder with Gary's example folders and pick it. The stand-in
+// embedder works from each picture's pixels (its colour), unless a test gives a
+// photo its numbers outright.
+// opts.sorted: earlier runs copied photos into filter's folders, [[folder, name]].
+// opts.broken: an unreadable example in red/.
+async function openExamples(page, opts = {}) {
+  await page.evaluate(async (opts) => {
+    const fx = window.__fx, cam = await fx.exampleCamera();
+    for (const [dir, name] of opts.sorted || []) await fx.put(await cam.getDirectoryHandle(dir, { create: true }), name, await (await cam.getFileHandle(name)).getFile());
+    if (opts.broken) await fx.put(await (await fx.dir('DCIM/Camera/filter-examples')).getDirectoryHandle('red'), 'broken.jpg', fx.noise(4000, 9));
+    window.__pick = cam;
+    window.filter.recog.override = (e, bmp) => (window.__answers[e.name] && window.__answers[e.name].vec ? window.__answers[e.name] : { vec: window.__fx.colourVec(bmp) });
+  }, opts);
+  await run(page, '#btn-pick');
+}
+// By example, with the bar lowered to 0.40 so magenta (0.50 to red and to blue) is
+// decided by the gap alone, whatever the JPEG does to its last digit.
+async function sortByExample(page, n) {
+  await page.click('#by-example');
+  await page.evaluate(() => { window.filter.RULES.minSim = 0.4; });
+  await sort(page, n);
+}
+const EXAMPLE_PLAN = {
+  red: ['PXL_20261030_100600000.jpg', 'PXL_20261030_100100000.jpg'],
+  green: ['PXL_20261030_100500000.jpg'],
+  'blue sky': ['PXL_20261030_100400000.jpg'],
+  unsure: ['PXL_20261030_100300000.jpg', 'PXL_20261030_100200000.jpg'],
+};
+const examplesOnly = (tree) => Object.fromEntries(Object.entries(tree).filter(([k]) => k.startsWith('filter-examples/')));
+
+test('setup: example folders are read from filter-examples, odd ones listed as not used, the mode is remembered', async () => {
+  const { ctx, page } = await newApp({ persistent: true });
+  await openExamples(page);
+  const r = await rowsOf(page, '#setup-rows');
+  eq([r.Photos, r['Already sorted'], r['Not yet sorted']], ['6', '0', '6'], 'counts: example photos are not counted as camera photos');
+  eq(r.Examples, 'blue sky 3, green 2, red 4 (3 each is best); not used: Unsure: a name filter keeps for itself, empty: no photos', 'examples row');
+  const seg = () => page.evaluate(() => ({
+    desc: document.querySelector('#by-description').getAttribute('aria-checked'), ex: document.querySelector('#by-example').getAttribute('aria-checked'),
+    exOff: document.querySelector('#by-example').disabled, by: document.querySelector('#by-cap').textContent, copies: document.querySelector('#copies-cap').textContent,
+    watch: [...document.querySelectorAll('#setup-rows .r')].find((x) => x.children[0].textContent === 'Examples').children[1].className,
+    small: [...document.querySelectorAll('button')].filter((b) => b.offsetParent && (b.offsetWidth < 44 || b.offsetHeight < 44)).map((b) => b.id || b.textContent),
+  }));
+  let s = await seg();
+  eq([s.desc, s.ex, s.exOff, s.watch, s.small], ['true', 'false', false, 'v watch', []], 'by description first; by example offered; examples flagged; tap targets');
+  await page.click('#by-example');
+  s = await seg();
+  eq([s.desc, s.ex], ['false', 'true'], 'by example chosen');
+  eq(s.by, 'Each photo is compared with your examples in filter-examples/ and goes to the closest folder, or stays as unsure.', 'caption');
+  eq(s.copies, 'Copies go into subfolders here named like your example folders: blue sky, green, red. Unsure photos stay where they are. Nothing is moved or deleted.', 'where copies go');
+  eq(await page.evaluate(() => window.filter.state.examples.map((f) => [f.name, f.files.map((x) => x.name)])),
+    [['blue sky', ['bluesky_1.jpg', 'bluesky_2.jpg', 'bluesky_3.jpg']], ['green', ['green_1.jpg', 'green_2.jpg']],
+      ['red', ['PXL_20261030_100100000.jpg', 'red_1.jpg', 'red_2.jpg', 'red_3.jpg']]], 'example files, in name order');
+  // Remembered after a restart; a folder with no examples falls back to by description.
+  await page.reload(); await ready(page);
+  eq(await page.evaluate(() => window.filter.state.by), 'example', 'remembered');
+  await page.evaluate(async () => {
+    const d = await window.__fx.dir('DCIM/Plain');
+    await window.__fx.put(d, 'PXL_20261030_090000000.jpg', await window.__fx.picture(1));
+    window.__pick = d;
+  });
+  await run(page, '#btn-change');
+  s = await seg();
+  eq([s.desc, s.ex, s.exOff], ['true', 'false', true], 'no examples here: by description, by example off');
+  eq(s.by, 'Each photo goes to the folder filter knows that fits what is in it. By example needs a filter-examples/ folder here.', 'says why');
+  eq((await rowsOf(page, '#setup-rows')).Examples, 'none: make filter-examples/ here, with a folder of 3 photos for each kind', 'how to make examples');
+  eq(await page.evaluate(() => window.filter.state.by), 'example', 'the choice is kept for a folder that has examples');
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
+test('by example: each photo goes to the folder of its closest example, unsure when torn or like nothing, least sure first', async () => {
+  const { ctx, page } = await newApp();
+  await openExamples(page);
+  await page.evaluate(() => {
+    window.__calls = [];
+    const o = window.filter.recog.override;
+    window.filter.recog.override = (e, b) => { window.__calls.push(e.name); return o(e, b); };
+    window.filter.recog.load = () => Promise.reject(new Error('by example must not load the F1 models'));
+    window.filter.recog.analyse = () => { throw new Error('by example must not use the F1 models'); };
+  });
+  await sortByExample(page);
+  eq(await screen(page), 'review', 'screen');
+  eq(sortPlan(await plan(page)), sortPlan(EXAMPLE_PLAN), 'plan');
+  const calls = await page.evaluate(() => window.__calls);
+  eq(calls.length, 15, 'the embedder saw 9 examples (none from Unsure or loose files) and 6 photos');
+  const r = await page.evaluate(() => ({
+    heads: [...document.querySelectorAll('.group-head')].map((h) => h.textContent),
+    unsure: [...document.querySelectorAll('.group[data-category="unsure"] .ph')].map((b) => window.filter.state.plan[b.dataset.index].name),
+    copy: document.querySelector('#btn-copy').textContent,
+    edge: document.querySelector('#bar-edge').textContent,
+    items: Object.fromEntries(window.filter.state.plan.map((p) => [p.name, { reason: p.reason, best: p.best, next: p.next }])),
+  }));
+  eq(r.heads, ['blue sky ▸ 1', 'green ▸ 1', 'red ▸ 2', 'unsure ▸ 2stay here, not copied'], 'a group per example folder, then unsure');
+  eq(r.unsure, ['PXL_20261030_100200000.jpg', 'PXL_20261030_100300000.jpg'], 'least sure first (newest first would be the other way)');
+  eq([r.copy, r.edge], ['Copy 4', '6 photos ▸ 2 stay'], 'copy button and film edge');
+  const it = r.items;
+  assert(/^red 1\.00 \(like [\w.]+\), next (green|blue sky) -0\.(49|50|51)$/.test(it['PXL_20261030_100600000.jpg'].reason), 'a red: ' + it['PXL_20261030_100600000.jpg'].reason);
+  assert(/^green 1\.00 \(like green_[12]\.jpg\), next (red|blue sky) -0\.(49|50|51)$/.test(it['PXL_20261030_100500000.jpg'].reason), 'a green: ' + it['PXL_20261030_100500000.jpg'].reason);
+  assert(/^blue sky 1\.00 \(like bluesky_[123]\.jpg\), next (red|green) -0\.(49|50|51)$/.test(it['PXL_20261030_100400000.jpg'].reason), 'a blue: ' + it['PXL_20261030_100400000.jpg'].reason);
+  const m = it['PXL_20261030_100300000.jpg'];
+  assert(/^too close to call: (red|blue sky) 0\.(49|50|51) \(like [\w.]+\), next (red|blue sky) 0\.(49|50|51)$/.test(m.reason), 'magenta: ' + m.reason);
+  assert(Math.abs(m.best.score - 0.5) < 0.02 && Math.abs(m.next.score - 0.5) < 0.02 && m.best.folder !== m.next.folder, 'magenta scores 0.50 to red and to blue');
+  assert(/^nothing close: (red|green|blue sky) -?0\.00 \(like [\w.]+\), next (red|green|blue sky) -?0\.00$/.test(it['PXL_20261030_100200000.jpg'].reason), 'no colour: ' + it['PXL_20261030_100200000.jpg'].reason);
+  const own = it['PXL_20261030_100100000.jpg'];
+  assert(own.best.folder === 'red' && own.best.score > 0.9999, 'a photo that is itself an example scores 1.00: ' + JSON.stringify(own.best));
+  await page.click('.group[data-category="unsure"] .ph[data-index="3"]');
+  const sheet = await page.evaluate(() => ({
+    why: document.querySelector('#sheet-why').textContent,
+    targets: [...document.querySelectorAll('#sheet-targets button')].map((b) => b.textContent),
+    pressed: [...document.querySelectorAll('#sheet-targets button')].filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.dataset.category),
+  }));
+  eq(sheet.targets, ['blue sky', 'green', 'red', 'unsure (stays)'], 'the example folders are offered');
+  eq(sheet.pressed, ['unsure'], 'current folder marked');
+  assert(sheet.why.startsWith('filter said unsure: too close to call: '), 'why: ' + sheet.why);
+  await page.click('#sheet-targets button[data-category="red"]');
+  eq((await plan(page)).red.length, 3, 'sent to red');
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
+test('by example: copies land in folders named like the examples, unsure stays, filter-examples untouched, log and details give the numbers', async () => {
+  const { ctx, page } = await newApp({ clipboard: true });
+  await openExamples(page);
+  const before = await camTree(page);
+  await sortByExample(page);
+  await page.click('.group[data-category="unsure"] .ph[data-index="3"]');      // magenta, torn: Gary says blue sky
+  await page.click('#sheet-targets button[data-category="blue sky"]');
+  await run(page, '#btn-copy');
+  eq(await screen(page), 'done', 'screen');
+  const after = await camTree(page);
+  eq(onlyRoot(after), onlyRoot(before), 'the camera folder itself is exactly as before');
+  eq(examplesOnly(after), examplesOnly(before), 'filter-examples exactly as before');
+  const want = { red: EXAMPLE_PLAN.red, green: EXAMPLE_PLAN.green, 'blue sky': ['PXL_20261030_100400000.jpg', 'PXL_20261030_100300000.jpg'] };
+  for (const [c, names] of Object.entries(want)) {
+    eq(filesIn(after, c), names.slice().sort(), c + '/ holds exactly its photos');
+    for (const n of names) eq(after[c + '/' + n], before[n], c + '/' + n + ' is byte-identical');
+  }
+  assert(!Object.keys(after).some((k) => k.startsWith('unsure/')), 'no unsure/ folder: those photos stay');
+  const logs = filesIn(after, 'filter-logs');
+  eq(logs.length, 1, 'one log');
+  const log = await readLog(page, logs[0]);
+  eq([log.mode, log.by, log.version], ['copy', 'example', VERSION], 'log header');
+  eq(log.result, { copied: 5, skipped: 0, stayed: 1, stopped: null }, 'log result');
+  eq(log.examples, [{ folder: 'blue sky', used: ['bluesky_1.jpg', 'bluesky_2.jpg', 'bluesky_3.jpg'], failed: [] }, { folder: 'green', used: ['green_1.jpg', 'green_2.jpg'], failed: [] },
+    { folder: 'red', used: ['PXL_20261030_100100000.jpg', 'red_1.jpg', 'red_2.jpg', 'red_3.jpg'], failed: [] }], 'the examples used');
+  const dm = log.decisions.find((x) => x.name === 'PXL_20261030_100300000.jpg');
+  eq([dm.folder, dm.suggested], ['blue sky', 'unsure'], 'the changed decision');
+  assert(log.decisions.every((x) => x.best && typeof x.best.score === 'number' && x.next && typeof x.next.score === 'number'), 'best and runner-up logged for every photo');
+  for (const i of log.items) eq([i.ok, i.sha256, i.copySha256], [true, before[i.name], before[i.name]], i.name + ' logged with its hashes');
+  const d = await rowsOf(page, '#done-rows');
+  eq([d.Copied, d.Stayed], ['5 of 5, each read back and checked (size and SHA-256)', '1 in unsure, not copied'], 'done rows');
+  assert(/ per photo, by example$/.test(d.Recognition), 'recognition row: ' + d.Recognition);
+  await page.click('#btn-details');
+  await page.waitForSelector('#notice:not([hidden])');
+  const lines = (await page.evaluate(() => navigator.clipboard.readText())).split('\n');
+  assert(new RegExp('^filter v' + VERSION.replace(/\./g, '\\.') + ' run by example \\d\\d/\\d\\d/\\d\\d \\d{4} hrs, 6 photos, [\\d.]+ s per photo, examples blue sky 3, green 2, red 4, bars 0\\.40 and gap 0\\.05$').test(lines[0]), 'header: ' + lines[0]);
+  eq(lines.length, 7, 'a line per photo');
+  assert(lines.some((l) => /^PXL_20261030_100300000\.jpg ▸ blue sky \(filter said unsure\): too close to call: (red|blue sky) 0\.(49|50|51) .*, next (red|blue sky) 0\.(49|50|51)$/.test(l)), 'changed photo with both numbers');
+  assert(lines.some((l) => /^PXL_20261030_100100000\.jpg ▸ red: red 1\.00 \(like PXL_20261030_100100000\.jpg\), next .* \[example of red\]$/.test(l)), 'an example photo is tagged: ' + lines.join(' | '));
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
+test('by example: photos copied by either mode count as sorted; a re-check takes them too and says where each is', async () => {
+  const { ctx, page } = await newApp({ clipboard: true });
+  // Earlier runs: the green photo was copied to people (by description), the newest red one to red (by example).
+  await openExamples(page, { sorted: [['people', 'PXL_20261030_100500000.jpg'], ['red', 'PXL_20261030_100600000.jpg']] });
+  const r = await rowsOf(page, '#setup-rows');
+  eq([r.Photos, r['Already sorted'], r['Not yet sorted']], ['6', '2', '4'], 'one set for both modes');
+  await sortByExample(page);
+  eq(Object.values(await plan(page)).flat().sort(), ['PXL_20261030_100100000.jpg', 'PXL_20261030_100200000.jpg', 'PXL_20261030_100300000.jpg', 'PXL_20261030_100400000.jpg'], 'the 4 not yet sorted');
+  await page.click('#btn-restart'); await page.click('#btn-restart');
+  await page.check('#recheck');
+  const before = await camTree(page);
+  await sort(page);
+  eq(Object.values(await plan(page)).flat().length, 6, 'a re-check takes all 6');
+  await page.click('#btn-review-details');
+  await page.waitForSelector('#notice:not([hidden])');
+  const lines = (await page.evaluate(() => navigator.clipboard.readText())).split('\n');
+  assert(/^filter v[\d.]+ re-check by example /.test(lines[0]), 'header: ' + lines[0]);
+  assert(lines.some((l) => /^PXL_20261030_100500000\.jpg ▸ green: .* \[already in people\]$/.test(l)), 'already in people');
+  assert(lines.some((l) => /^PXL_20261030_100600000\.jpg ▸ red: .* \[already in red\]$/.test(l)), 'already in red');
+  eq(await page.evaluate(() => document.querySelector('#btn-copy').hidden), true, 'nothing can be copied');
+  eq(await camTree(page), before, 'nothing written by a re-check');
+  await ctx.close();
+});
+
+test('by example: an example that cannot be read is left out and reported; an embedder that fails to load changes nothing', async () => {
+  const { ctx, page } = await newApp({ clipboard: true });
+  await openExamples(page, { broken: true });
+  const before = await camTree(page);
+  await page.click('#by-example');
+  await page.evaluate(() => { window.filter.recog.loadEmbedder = () => Promise.reject(new Error('broken model')); });
+  await sort(page);
+  eq(await screen(page), 'setup', 'back on the folder screen');
+  eq(await text(page, '#setup-note'), 'The models did not load: Error: broken model. Try again; nothing was changed.', 'says why');
+  eq(await camTree(page), before, 'folder untouched');
+  await page.evaluate(() => { window.filter.recog.loadEmbedder = () => Promise.resolve(null); window.filter.RULES.minSim = 0.4; });
+  await sort(page);
+  eq(sortPlan(await plan(page)), sortPlan(EXAMPLE_PLAN), 'the other examples still decide');
+  eq(await page.evaluate(() => window.filter.state.exampleUse.find((u) => u.folder === 'red').used.length), 4, 'red still has 4 examples');
+  const lines = (await page.evaluate(() => window.filter.runDetails())).split('\n');
+  assert(/examples blue sky 3, green 2, red 4,/.test(lines[0]), 'header counts the examples used: ' + lines[0]);
+  assert(/^example not used: red\/broken\.jpg: /.test(lines[lines.length - 1]), 'reported: ' + lines[lines.length - 1]);
+  await ctx.close();
+});
+
+test('real embedder: drawn patterns go to the folder of their own pattern, a pattern with no folder is unsure', async () => {
+  const { ctx, page } = await newApp({ models: 'real' });
+  await page.evaluate(async () => {
+    const fx = window.__fx, cam = await fx.dir('DCIM/Camera'), ex = await fx.dir('DCIM/Camera/filter-examples');
+    for (const kind of ['stripes', 'checks', 'rings']) {
+      const d = await ex.getDirectoryHandle(kind, { create: true });
+      for (const [i, hue] of [10, 120, 220].entries()) await fx.put(d, kind + '_' + i + '.jpg', await fx.pattern(kind, hue, 7 + i * 13));
+    }
+    // New hue and new spacing for each pattern; dots have no folder.
+    for (const [i, kind] of ['stripes', 'checks', 'rings', 'dots'].entries()) await fx.put(cam, 'PXL_20261030_10' + i + '000000.jpg', await fx.withExif(await fx.pattern(kind, 300, 46)));
+    window.__pick = cam;
+  });
+  await run(page, '#btn-pick');
+  await page.click('#by-example');
+  await sort(page);
+  eq(await screen(page), 'review', 'screen');
+  const r = await page.evaluate(() => window.filter.state.plan.map((p) => [p.name, p.category, p.reason]));
+  console.log('      real embedder on drawn patterns: ' + r.map((x) => x[1] + ' (' + x[2] + ')').join('; '));
+  eq(r.map((x) => x[1]), ['unsure', 'rings', 'checks', 'stripes'], 'dots, rings, checks, stripes (newest first)');
+  const real = page.errors.filter((e) => e !== 'INFO: Created TensorFlow Lite XNNPACK delegate for CPU.');
+  assert(real.length === 0, real.join('; '));
+  await ctx.close();
+});
+
 test('real models: the classifier, face detector and object detector run offline on synthetic photos', async () => {
   const { ctx, page } = await newApp({ models: 'real' });
   await page.evaluate(async () => {
@@ -1226,23 +1595,23 @@ test('real models: the classifier, face detector and object detector run offline
   await ctx.close();
 });
 
-test('offline: the service worker caches the app, MediaPipe and the three models', async () => {
+test('offline: the service worker caches the app, MediaPipe and the four models', async () => {
   const { ctx, page } = await newApp({ sw: true });
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.waitForFunction(async (version) => {
     const keys = await caches.keys();
     if (!keys.includes('filter-v' + version)) return false;
     const v = keys.find((k) => k.startsWith('filter-mediapipe-'));
-    return v && (await (await caches.open(v)).keys()).length === 6;
+    return v && (await (await caches.open(v)).keys()).length === 7;
   }, VERSION, { timeout: 60000, polling: 250 });
   await ctx.setOffline(true);
   await page.reload(); await ready(page);
   const r = await page.evaluate(async () => {
     const font = await document.fonts.load('600 14px "Barlow Semi Condensed"');
     return { title: document.title, font: font.length,
-      models: await Promise.all(['efficientnet_lite0', 'blaze_face_short_range', 'efficientdet_lite0'].map(async (m) => !!(await caches.match('vendor/mediapipe/' + m + '.tflite')))) };
+      models: await Promise.all(['efficientnet_lite0', 'blaze_face_short_range', 'efficientdet_lite0', 'mobilenet_v3_large'].map(async (m) => !!(await caches.match('vendor/mediapipe/' + m + '.tflite')))) };
   });
-  eq(r, { title: 'filter', font: 1, models: [true, true, true] }, 'offline page, font and the three models');
+  eq(r, { title: 'filter', font: 1, models: [true, true, true, true] }, 'offline page, font and the four models');
   await ctx.close();
 });
 

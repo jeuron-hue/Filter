@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # filter_mutate.sh: mutation run over the core functions: folder reading, choosing
-# the newest photos, reading photo headers, the sorting rules and the safe copy.
+# the newest photos, reading photo headers, the sorting rules, comparing photos
+# with Gary's examples (F2) and the safe copy.
 #
 # The idea: plant one small, deliberate bug (a "mutant") in the CORE block of
 # filter.html, run the core behaviour tests against it, and expect them to
@@ -139,6 +140,24 @@ copy: skip not marked ||| log.skipped = true; ||| log.skipped = false;
 copy: copy not marked as made ||| log.copyMade = true; ||| log.copyMade = false;
 copy: steps not reported ||| const at = (s) => { log.step = s; if (opts.onStep) opts.onStep(s); }; ||| const at = (s) => { log.step = s; };
 copy: ok before the compare ||| at('compare'); ||| at('compare'); log.ok = true;
+cosine: second list's size ignored ||| return na && nb ? dot / Math.sqrt(na * nb) : 0; ||| return na && nb ? dot / Math.sqrt(na * na) : 0;
+cosine: no square root ||| dot / Math.sqrt(na * nb) ||| dot / (na * nb)
+cosine: all-zero list gives nonsense ||| return na && nb ? dot / Math.sqrt(na * nb) : 0; ||| return dot / Math.sqrt(na * nb);
+nearest: first example only ||| if (!top || score > top.score) top = ||| if (!top) top =
+nearest: weakest example counts ||| if (!top || score > top.score) top = ||| if (!top || score < top.score) top =
+nearest: worst folder first ||| scores.sort((p, q) => q.score - p.score); ||| scores.sort((p, q) => p.score - q.score);
+nearest: runner-up from the wrong end ||| next = scores[1] || null ||| next = scores[scores.length - 1] || null
+nearest: folder with no examples counted ||| if (top) scores.push(top); ||| scores.push(top);
+nearest: like nothing accepted ||| if (best.score < rules.minSim) return ||| if (false) return
+nearest: bar edge excluded ||| if (best.score < rules.minSim) return ||| if (best.score <= rules.minSim) return
+nearest: torn accepted ||| if (next && best.score - next.score < rules.minGap) return ||| if (false) return
+nearest: gap edge excluded ||| best.score - next.score < rules.minGap ||| best.score - next.score <= rules.minGap
+nearest: one folder alone fails ||| if (next && best.score - next.score ||| if (best.score - next.score
+example name: hidden folders allowed ||| if (name[0] === '.') return 'hidden'; ||| if (false) return 'hidden';
+example name: case matters ||| RESERVED.includes(name.toLowerCase()) ||| RESERVED.includes(name)
+order: most sure first ||| (a.score == null ? -2 : a.score) - (b.score == null ? -2 : b.score) ||| (b.score == null ? -2 : b.score) - (a.score == null ? -2 : a.score)
+order: no score last ||| (a.score == null ? -2 : a.score) - (b.score == null ? -2 : b.score) ||| (a.score == null ? 2 : a.score) - (b.score == null ? 2 : b.score)
+order: the given list sorted in place ||| core.leastSureFirst = (items) => items.slice().sort( ||| core.leastSureFirst = (items) => items.sort(
 EOF
 )
 

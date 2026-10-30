@@ -3,16 +3,22 @@
 filter: sorts the photos and videos on Gary's phone into folders by what is in
 them. Installed as a PWA. Everything runs on the phone; nothing is uploaded.
 
-This build is phase F1: photos, by description (the fixed list), Review mode,
-copy only. Pick a folder (DCIM/Camera), choose how many of the newest photos to
-sort, filter recognises each one and shows its plan as a grid per folder, Gary
-moves any picture to another folder, then one tap copies them. Copies go into
+This build is phase F2: photos, Review mode, copy only, in two recognition
+modes picked per run. By description (F1): the fixed list. By example (F2): Gary
+makes folders in filter-examples/ inside the picked folder, each with a few
+example photos (3 is best); filter compares every photo with every example and
+proposes the closest folder, or "unsure" when nothing is close enough or two
+folders are too close to call. Pick a folder (DCIM/Camera), choose how many of
+the newest photos to sort, filter shows its plan as a grid per folder, Gary moves
+any picture to another folder, then one tap copies them. Copies go into
 subfolders of the picked folder (people, pets, food, screenshots, documents,
-scenery); photos in "other" stay where they are and are not copied. Every copy
-is read back and checked byte for byte (size and SHA-256). F1 never deletes or
-overwrites anything. Each run writes a log to filter-logs/ in the picked folder.
+scenery, or the names of Gary's example folders); photos in "other" or "unsure"
+stay where they are and are not copied. Every copy is read back and checked byte
+for byte (size and SHA-256). filter never deletes or overwrites anything, and
+never writes to filter-examples/. Each run writes a log to filter-logs/ in the
+picked folder.
 
-APP_VERSION 0.1.5 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.2.0 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -28,7 +34,8 @@ change the version here in the same commit as the file.
   vendor/mediapipe/efficientnet_lite0.tflite   MediaPipe image classifier EfficientNet-Lite0, float32, version 1 (the store's "latest" is the same file), 224 x 224 input, 1000 ImageNet classes, labels inside the model, 18.6 MB, from the MediaPipe model store (image_classifier/efficientnet_lite0/float32/1), downloaded 29/10/26, Apache-2.0 (stated in the model's own metadata and by its publisher, the TensorFlow TPU repository), sha256 6c7ab0a6e5dcbf38a8c33b960996a55a3b4300b36a018c4545801de3a3c8bde0
   vendor/mediapipe/blaze_face_short_range.tflite  MediaPipe face detector BlazeFace short range, float16, version 1 (the store's "latest" is the same file), 128 x 128 input, 230 kB, from the MediaPipe model store (face_detector/blaze_face_short_range/float16/1), downloaded 30/10/26, Apache-2.0 (model card dated 09/06/21), sha256 b4578f35940bf5a1a655214a1cce5cab13eba73c1297cd78e1a04c2380b0152f
   vendor/mediapipe/efficientdet_lite0.tflite   MediaPipe object detector EfficientDet-Lite0, int8, version 1 (the store's "latest" is the same file), 320 x 320 input, the 80 COCO objects, labels inside the model, 4.6 MB, from the MediaPipe model store (object_detector/efficientdet_lite0/int8/1), downloaded 30/10/26, Apache-2.0 (its publisher, the google/automl repository that released EfficientDet-Lite0, is Apache-2.0; unlike the classifier, the file itself states no licence and MediaPipe has no card for it), sha256 0720bf247bd76e6594ea28fa9c6f7c5242be774818997dbbeffc4da460c723bb
-  vendor/mediapipe/LICENSE-apache-2.0.txt      Apache License 2.0 text from apache.org, copied from retouch, covers the six files above, sha256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
+  vendor/mediapipe/mobilenet_v3_large.tflite   MediaPipe image embedder MobileNet-V3 large, float32, version 1 (the store's "latest" is the same file), 224 x 224 input, 1280 numbers per picture, 10.9 MB, from the MediaPipe model store (image_embedder/mobilenet_v3_large/float32/1), downloaded 30/10/26, Apache-2.0 (stated in the model's own metadata; its publisher, tensorflow/models research/slim, is Apache-2.0; MediaPipe has no card for it), sha256 11af3c560dfeed7737cb4c03c23bf52a8403020784192d4dea0b74862a12828d
+  vendor/mediapipe/LICENSE-apache-2.0.txt      Apache License 2.0 text from apache.org, copied from retouch, covers the seven files above, sha256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
   MediaPipe notes: the same pin as retouch. Only the SIMD build is vendored (Chrome
   on Android has had wasm SIMD since version 91). Why 0.10.35 and not 1.x: from 1.0
   the bundle carries a usage logger that posts to a Google logging server.
@@ -59,6 +66,13 @@ change the version here in the same commit as the file.
   tie, a jersey): tight portraits fill the frame too (fifth run, 30/10/26:
   thirteen suit photos lost from people by the close-up rule alone). After a
   close-up the closer look is skipped: small "people" inside it are pieces.
+  By example (F2) uses only the image embedder: it turns a picture into 1280
+  numbers, and similar pictures get similar numbers. Large rather than small
+  (Gary, 30/10/26): sharper at telling close folders apart (75.2 % against 67.5 %
+  ImageNet top-1 in the MobileNetV3 release), and decoding, not the model, sets
+  the pace. Photos and examples are compared by cosine similarity (1 is the same
+  direction). On synthetic test patterns (30/10/26) pictures of one pattern scored
+  0.60 to 0.96 with each other and 0.06 to 0.52 with other patterns.
 
 How the file is laid out:
   1. Content-Security-Policy: the browser itself refuses any network call to
@@ -160,6 +174,11 @@ body[data-screen="copy"] .screen[data-screen="copy"],body[data-screen="done"] .s
 .r .v.pass{color:var(--pass)} .r .v.watch{color:var(--watch)} .r .v.fail{color:var(--fail)}
 .field{display:flex;align-items:center;gap:12px;min-height:var(--tap)}
 .field label{flex:1;font-size:12px;line-height:16px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+/* Two-way switch: by description or by example. The chosen half lights amber. */
+.seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line-strong);border-radius:4px;overflow:hidden}
+.seg button{min-height:var(--tap);border:0;background:transparent;color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.14em;text-transform:uppercase}
+.seg button+button{border-left:1px solid var(--line-strong)}
+.seg button[aria-checked="true"]{background:var(--amber-deep);color:var(--amber)}
 .check{display:flex;align-items:center;gap:12px;min-height:var(--tap);font-size:13px;line-height:18px;color:var(--ink-2)}
 .check input{width:24px;height:24px;margin:10px;flex:0 0 auto;accent-color:var(--amber)}
 input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-strong);border-radius:4px;background:var(--stage);color:var(--ink);padding:0 10px;font:14px var(--font-mono);text-align:right}
@@ -237,12 +256,17 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
     <div class="card">
       <div class="card-head"><span class="edge">Folder</span><h2 id="setup-name"></h2></div>
       <div class="rows" id="setup-rows"></div>
+      <div class="seg" role="radiogroup" aria-label="Recognise photos">
+        <button type="button" role="radio" id="by-description" data-by="description" aria-checked="true">By description</button>
+        <button type="button" role="radio" id="by-example" data-by="example" aria-checked="false">By example</button>
+      </div>
+      <p class="cap" id="by-cap"></p>
       <div class="field">
         <label for="newest">Newest photos to sort</label>
         <input type="number" id="newest" min="1" max="2000" step="1" value="200" inputmode="numeric">
       </div>
       <label class="check"><input type="checkbox" id="recheck"><span>Re-check photos already sorted. Nothing is copied: for comparing what filter says now.</span></label>
-      <p class="cap">Copies go into subfolders here: people, pets, food, screenshots, documents, scenery. Photos in "other" stay where they are. Nothing is moved or deleted.</p>
+      <p class="cap" id="copies-cap"></p>
       <p class="note" id="setup-note"></p>
     </div>
     <div class="actions-col" style="align-self:center">
@@ -318,13 +342,21 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.1.5';
+const APP_VERSION = '0.2.0';
 
 // The folders filter knows, in the order they are shown. Photos in "other"
 // stay where they are: nothing is copied for them.
 const CATEGORIES = ['people', 'pets', 'food', 'screenshots', 'documents', 'scenery', 'other'];
 const STAY = 'other';
 const LOG_FOLDER = 'filter-logs';
+// By example: Gary's folders are the subfolders of this one, each holding a few
+// example photos. filter only reads it. Photos close to no folder are "unsure"
+// and stay where they are, like "other".
+const EXAMPLES = 'filter-examples';
+const UNSURE = 'unsure';
+// Names an example folder may not have: filter's own (compared ignoring case,
+// as Android's storage does).
+const RESERVED = [STAY, UNSURE, LOG_FOLDER, EXAMPLES];
 
 // Kept in one object so the tests can change them. The phone runs these values.
 const config = {
@@ -364,6 +396,9 @@ const RULES = {
   screenRatio: [0.40, 0.50],   // short side / long side of a phone screen (Pixel 9 Pro XL: 0.45)
   screenLong: 1600,     // ... and a long side of at least this many pixels
   text: { bright: 0.5, darkMin: 0.02, darkMax: 0.3, satMax: 0.18, edgeMin: 0.04 },
+  // By example: a photo's score for a folder is its cosine similarity to that folder's closest example.
+  minSim: 0.5,          // the best folder must score at least this, or the photo is unsure (like nothing)
+  minGap: 0.05,         // ... and beat the runner-up folder by at least this, or it is unsure (torn between two)
 };
 
 // Classifier labels per folder, as index ranges in the model's 1000 ImageNet
@@ -410,6 +445,7 @@ const MP = {
   classifier: 'vendor/mediapipe/efficientnet_lite0.tflite',
   faces: 'vendor/mediapipe/blaze_face_short_range.tflite',
   objects: 'vendor/mediapipe/efficientdet_lite0.tflite',
+  embedder: 'vendor/mediapipe/mobilenet_v3_large.tflite',
 };
 
 /* ============================================================
@@ -758,6 +794,52 @@ core.categorize = (p, rules = RULES, groups = LABEL_GROUPS, clothes = CLOTHES) =
   return { category: 'other', reason: 'nothing clear' + (notes.length ? ' (' + notes.join('; ') + ')' : '') };
 };
 
+// By example. How alike two pictures are, from their lists of numbers (the
+// embedder's output): the cosine of the angle between the two lists, from -1 to
+// 1, where 1 means pointing the same way (the same kind of picture). An all-zero
+// list is alike nothing: 0.
+core.cosine = (a, b) => {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  return na && nb ? dot / Math.sqrt(na * nb) : 0;
+};
+
+// The closest folder by example. folders: [{ name, examples: [{ name, vec }] }].
+// A folder's score is the score of its closest example. The best folder wins if
+// it reaches minSim and beats the runner-up folder by at least minGap; otherwise
+// the photo is unsure. best and next (folder, score, example) go to the run details.
+core.nearest = (vec, folders, rules = RULES) => {
+  const scores = [];
+  for (const f of folders) {
+    let top = null;
+    for (const ex of f.examples) {
+      const score = core.cosine(vec, ex.vec);
+      if (!top || score > top.score) top = { folder: f.name, score, example: ex.name };
+    }
+    if (top) scores.push(top);
+  }
+  scores.sort((p, q) => q.score - p.score);
+  const best = scores[0] || null, next = scores[1] || null;
+  if (!best) return { category: UNSURE, reason: 'no examples to compare with', best, next };
+  const says = best.folder + ' ' + best.score.toFixed(2) + ' (like ' + best.example + '), ' +
+    (next ? 'next ' + next.folder + ' ' + next.score.toFixed(2) : 'no other folder');
+  if (best.score < rules.minSim) return { category: UNSURE, reason: 'nothing close: ' + says, best, next };
+  if (next && best.score - next.score < rules.minGap) return { category: UNSURE, reason: 'too close to call: ' + says, best, next };
+  return { category: best.folder, reason: says, best, next };
+};
+
+// Why a subfolder of filter-examples cannot be an example folder, or null if it can.
+core.exampleProblem = (name) => {
+  if (name[0] === '.') return 'hidden';
+  if (RESERVED.includes(name.toLowerCase())) return 'a name filter keeps for itself';
+  return null;
+};
+
+// The review lists each folder's photos least sure first (lowest best score), so
+// the ones most likely wrong are seen first. Ties keep their order; a photo with
+// no score (it could not be read) comes first of all.
+core.leastSureFirst = (items) => items.slice().sort((a, b) => (a.score == null ? -2 : a.score) - (b.score == null ? -2 : b.score));
+
 // Run load(item) up to `depth` items ahead of each(result, i), which sees the
 // results one at a time, in order. each returning false stops the run. Lets the
 // phone read and decode the next photos while the models look at this one.
@@ -879,9 +961,17 @@ const state = {
   folder: null,       // the picked folder's handle, once access is granted
   stored: null,       // the folder record kept in IndexedDB
   photos: [],         // photos in the folder: { name, handle }
-  sorted: {},         // per category folder: the Set of names already in it
+  sorted: {},         // per folder filter copies into (F1's and Gary's): the Set of names already in it
   sortedAll: new Set(),
-  plan: [],           // one item per photo: { name, handle, category, first, reason, thumb }
+  examples: [],       // by example: Gary's folders, [{ name, files: [{ name, handle }] }]
+  exampleNotes: [],   // subfolders of filter-examples that could not be used, and why
+  by: 'description',  // the recognition mode Gary last chose: 'description' or 'example'
+  runBy: 'description', // the mode of the run on screen
+  cats: CATEGORIES,   // the run's folders, in the order shown
+  stay: STAY,         // the run's folder that is not copied: "other" or "unsure"
+  exampleUse: [],     // by example: per folder, the examples used and any that failed
+  exampleOf: new Map(), // by example: photo name -> the example folder holding a photo of that name
+  plan: [],           // one item per photo: { name, handle, category, first, reason, thumb, score }
   stopRequested: false,
   recheck: false,     // a re-check run: photos already sorted included, nothing copied
   wasIn: new Map(),   // name -> the folder it was already in when the run started
@@ -1016,17 +1106,19 @@ async function openFolder(h) {
     entries += b.entries.length;
     for (const e of b.entries) {
       if (e.kind === 'photo') photos.push({ name: e.name, handle: e.handle });
-      else if (e.kind === 'folder' && CATEGORIES.includes(e.name)) subfolders.set(e.name, e.handle);
+      else if (e.kind === 'folder') subfolders.set(e.name, e.handle);
     }
     step('reading ' + h.name + ', ' + entries + ' entries');
     if (b.stalled) { stalled = true; break; }
     if (b.done) break;
   }
+  await readExamples(subfolders.get(EXAMPLES));
   // filter's own folders are small, so listing them is quick. Their names mark
-  // photos already sorted, which later runs skip.
+  // photos already sorted, which later runs skip. F1's folders and Gary's are one
+  // set: a photo copied by either mode counts as sorted for both.
   state.sorted = {};
   state.sortedAll = new Set();
-  for (const c of CATEGORIES) {
+  for (const c of folderNames()) {
     state.sorted[c] = new Set();
     const d = subfolders.get(c);
     if (!d) continue;
@@ -1039,14 +1131,67 @@ async function openFolder(h) {
     ['Photos', String(photos.length)],
     ['Already sorted', String(photos.length - fresh)],
     ['Not yet sorted', String(fresh)],
+    ['Examples', examplesText(), state.exampleNotes.length || state.examples.some((f) => f.files.length < 3) ? 'watch' : undefined],
   ]);
   state.fresh = fresh;
   setupChoice();
 }
 
+// Gary's example folders: each subfolder of filter-examples/ with at least one
+// photo in it. Read only: filter never writes there. Sorted by name, so the
+// order is the same on every run.
+async function readExamples(dir) {
+  state.examples = [];
+  state.exampleNotes = [];
+  if (!dir) return;
+  const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  for await (const d of dir.values()) {
+    if (d.kind !== 'directory') continue;
+    const why = core.exampleProblem(d.name);
+    if (why) { state.exampleNotes.push(d.name + ': ' + why); continue; }
+    const files = [];
+    for await (const x of d.values()) if (x.kind === 'file' && core.kindOf(x.name) === 'photo') files.push({ name: x.name, handle: x });
+    if (!files.length) { state.exampleNotes.push(d.name + ': no photos'); continue; }
+    state.examples.push({ name: d.name, files: files.sort(byName) });
+  }
+  state.examples.sort(byName);
+  state.exampleNotes.sort();
+}
+
+// Every folder filter copies into: F1's fixed list and Gary's example folders.
+const folderNames = () => [...new Set(CATEGORIES.concat(state.examples.map((f) => f.name)))];
+
+function examplesText() {
+  if (!state.examples.length && !state.exampleNotes.length) return 'none: make ' + EXAMPLES + '/ here, with a folder of 3 photos for each kind';
+  const list = state.examples.map((f) => f.name + ' ' + f.files.length).join(', ') || 'none usable';
+  return list + (state.examples.some((f) => f.files.length < 3) ? ' (3 each is best)' : '') +
+    (state.exampleNotes.length ? '; not used: ' + state.exampleNotes.join(', ') : '');
+}
+
+// The mode switch: by example needs at least one example folder. Gary's last
+// choice is remembered on the phone; it falls back to by description here if
+// this folder has no examples.
+const byExample = () => state.by === 'example' && state.examples.length > 0;
+function rememberBy(by) {
+  state.by = by;
+  try { localStorage.setItem('filter-by', by); } catch (e) { /* remembered for this session only */ }
+  setupChoice();
+}
+try { if (localStorage.getItem('filter-by') === 'example') state.by = 'example'; } catch (e) { /* use the default */ }
+
 // The sort button and the count follow the re-check switch: a re-check takes the
 // newest photos whether sorted or not.
 function setupChoice() {
+  const ex = byExample();
+  $('#by-description').setAttribute('aria-checked', String(!ex));
+  $('#by-example').setAttribute('aria-checked', String(ex));
+  $('#by-example').disabled = !state.examples.length;
+  $('#by-cap').textContent = ex
+    ? 'Each photo is compared with your examples in ' + EXAMPLES + '/ and goes to the closest folder, or stays as unsure.'
+    : 'Each photo goes to the folder filter knows that fits what is in it.' + (state.examples.length ? '' : ' By example needs a ' + EXAMPLES + '/ folder here.');
+  $('#copies-cap').textContent = ex
+    ? 'Copies go into subfolders here named like your example folders: ' + state.examples.map((f) => f.name).join(', ') + '. Unsure photos stay where they are. Nothing is moved or deleted.'
+    : 'Copies go into subfolders here: people, pets, food, screenshots, documents, scenery. Photos in "other" stay where they are. Nothing is moved or deleted.';
   const recheck = $('#recheck').checked;
   const can = recheck ? state.photos.length : state.fresh;
   $('#newest').value = Math.min(config.newest, Math.max(1, can));
@@ -1106,6 +1251,26 @@ const recog = {
   dets(objects, img) {
     return objects.detect(img).detections.map((x) => ({ name: x.categories[0].categoryName, score: x.categories[0].score,
       x: x.boundingBox.originX, y: x.boundingBox.originY, w: x.boundingBox.width, h: x.boundingBox.height }));
+  },
+  // By example: the image embedder alone, loaded on the first run by example.
+  // Test seam: override(entry, bmp).vec is the photo's list of numbers.
+  embedPromise: null,
+  loadEmbedder() {
+    if (this.override) return Promise.resolve(null);
+    if (!this.embedPromise) {
+      this.embedPromise = (async () => {
+        const mp = await import('./vendor/mediapipe/vision_bundle.js');
+        return mp.ImageEmbedder.createFromOptions({ wasmLoaderPath: MP.loader, wasmBinaryPath: MP.wasm },
+          { baseOptions: { modelAssetPath: MP.embedder, delegate: 'CPU' }, runningMode: 'IMAGE', l2Normalize: true, quantize: false });
+      })();
+      this.embedPromise.catch(() => { this.embedPromise = null; });
+    }
+    return this.embedPromise;
+  },
+  async embed(bmp, entry) {
+    if (this.override) return (this.override(entry, bmp) || {}).vec || [];
+    const embedder = await this.loadEmbedder();
+    return Array.from(embedder.embed(bmp).embeddings[0].floatEmbedding);
   },
   // The closer look: the object detector on overlapping parts of the 1280 px decode.
   // Each part's boxes are put back on the whole photo (as shares of it).
@@ -1172,14 +1337,21 @@ function clearPlan() {
 async function runSort() {
   const n = Math.min(config.maxNewest, Math.max(1, Math.round(+$('#newest').value) || config.newest));
   state.recheck = $('#recheck').checked;
+  state.runBy = byExample() ? 'example' : 'description';
+  const ex = state.runBy === 'example';
+  state.cats = ex ? state.examples.map((f) => f.name).concat(UNSURE) : CATEGORIES;
+  state.stay = ex ? UNSURE : STAY;
   state.wasIn = new Map();
-  for (const c of CATEGORIES) for (const name of state.sorted[c] || []) state.wasIn.set(name, c);
+  for (const c of folderNames()) for (const name of state.sorted[c] || []) state.wasIn.set(name, c);
+  state.exampleOf = new Map();
+  for (const f of state.examples) for (const x of f.files) state.exampleOf.set(x.name, f.name);
   const pick = core.pickNewest(state.photos, state.recheck ? new Set() : state.sortedAll, n);
   if (!pick.chosen.length) return;
   clearPlan();
   state.stopRequested = false;
+  state.exampleUse = [];
   const stats = { decode: 0, analyse: 0, failed: 0, closer: 0 };
-  const tally = Object.fromEntries(CATEGORIES.map((c) => [c, 0]));
+  const tally = Object.fromEntries(state.cats.map((c) => [c, 0]));
   const total = pick.chosen.length;
   $('#run-count').textContent = '0 / ' + total;
   $('#run-fill').style.width = '0';
@@ -1187,40 +1359,32 @@ async function runSort() {
   $('#run-cap').textContent = 'Loading the models';
   show('run');
   step('loading the models');
-  try { await recog.load(); }
+  try { await (ex ? recog.loadEmbedder() : recog.load()); }
   catch (e) {
     $('#setup-note').textContent = 'The models did not load: ' + errText(e) + '. Try again; nothing was changed.';
     show('setup');
     return;
   }
+  let folders = [];
+  if (ex) {
+    step('reading the examples');
+    $('#run-cap').textContent = 'Reading the examples';
+    folders = await exampleVectors();
+  }
   const t0 = now();
   step('recognising');
   await core.mapAhead(pick.chosen, config.prefetch, prepare, async (p, i) => {
-    const item = { name: p.entry.name, handle: p.entry.handle, category: STAY, reason: '', thumb: null };
+    const item = { name: p.entry.name, handle: p.entry.handle, category: state.stay, reason: '', thumb: null, score: null };
     if (p.error) {
       item.reason = 'could not open: ' + p.error;
       stats.failed++;
     } else {
       const a = now();
       try {
-        const r = await recog.analyse(p.bmp, p.entry);
-        const text = textCheck(p.bmp);
-        const objects = core.objectsFrom(core.dedupe(r.boxes));
-        const facts = { name: p.entry.name, format: p.info.format, make: p.info.make,
-          width: p.size.w, height: p.size.h, faces: r.faces, objects, labels: r.labels, text: text.isText };
-        let c = core.categorize(facts);
-        // No closer look after a close-up (a person filling the frame): small "people" inside it are pieces of it.
-        if (c.category !== 'people' && c.category !== 'screenshots' && !objects.people.filled) {
-          // A closer look, for people far away only: the small person boxes it finds
-          // join the first look's, overlapping ones are merged, and the same rules decide again.
-          const near = core.closerPeople(await recog.closer(p.big, p.entry));
-          stats.closer++;
-          const people = core.objectsFrom(core.dedupe(r.boxes.concat(near))).people;
-          const c2 = core.categorize({ ...facts, objects: { ...objects, people } });
-          c = c2.category === c.category ? c2 : { category: c2.category, reason: c2.reason + ' (closer look)' };
-        }
+        const c = ex ? core.nearest(await recog.embed(p.bmp, p.entry), folders) : await describe(p, stats);
         item.category = c.category;
         item.reason = c.reason;
+        if (ex) { item.score = c.best ? c.best.score : null; item.best = c.best; item.next = c.next; }
         item.thumb = await thumbOf(p.bmp);
       } catch (e) {
         item.reason = 'could not recognise: ' + errText(e);
@@ -1235,13 +1399,13 @@ async function runSort() {
     const done = i + 1, per = (now() - t0) / done;
     $('#run-count').textContent = done + ' / ' + total;
     $('#run-fill').style.width = (100 * done / total) + '%';
-    $('#run-tally').textContent = CATEGORIES.filter((c) => tally[c]).map((c) => c + ' ' + tally[c]).join('  ');
+    $('#run-tally').textContent = state.cats.filter((c) => tally[c]).map((c) => c + ' ' + tally[c]).join('  ');
     $('#run-cap').textContent = fmtS(per) + ' per photo, about ' + fmtS(per * (total - done)) + ' to go';
     return !state.stopRequested;
   });
   const done = state.plan.length;
   state.lastRun = {
-    photos: done, chosen: total,
+    by: state.runBy, photos: done, chosen: total,
     perPhotoMs: done ? (now() - t0) / done : 0,
     closer: stats.closer, decodeMs: done ? stats.decode / done : 0, analyseMs: done ? stats.analyse / done : 0, failed: stats.failed,
   };
@@ -1249,23 +1413,66 @@ async function runSort() {
   show('review');
 }
 
+// By description (F1): the three models and the rules, with the closer look for
+// people far away when the first look is not already people or a screenshot.
+async function describe(p, stats) {
+  const r = await recog.analyse(p.bmp, p.entry);
+  const text = textCheck(p.bmp);
+  const objects = core.objectsFrom(core.dedupe(r.boxes));
+  const facts = { name: p.entry.name, format: p.info.format, make: p.info.make,
+    width: p.size.w, height: p.size.h, faces: r.faces, objects, labels: r.labels, text: text.isText };
+  let c = core.categorize(facts);
+  // No closer look after a close-up (a person filling the frame): small "people" inside it are pieces of it.
+  if (c.category !== 'people' && c.category !== 'screenshots' && !objects.people.filled) {
+    // A closer look, for people far away only: the small person boxes it finds
+    // join the first look's, overlapping ones are merged, and the same rules decide again.
+    const near = core.closerPeople(await recog.closer(p.big, p.entry));
+    stats.closer++;
+    const people = core.objectsFrom(core.dedupe(r.boxes.concat(near))).people;
+    const c2 = core.categorize({ ...facts, objects: { ...objects, people } });
+    c = c2.category === c.category ? c2 : { category: c2.category, reason: c2.reason + ' (closer look)' };
+  }
+  return c;
+}
+
+// By example: every example photo decoded the same way as the photos and turned
+// into its list of numbers. Read fresh on every run, so a change to the examples
+// counts at once. An example that cannot be read is left out and reported.
+async function exampleVectors() {
+  const folders = [];
+  for (const f of state.examples) {
+    const use = { folder: f.name, used: [], failed: [] }, examples = [];
+    for (const x of f.files) {
+      const p = await prepare({ name: x.name, handle: x.handle });
+      if (p.error) { use.failed.push(x.name + ': ' + p.error); continue; }
+      try { examples.push({ name: x.name, vec: await recog.embed(p.bmp, p.entry) }); use.used.push(x.name); }
+      catch (e) { use.failed.push(x.name + ': ' + errText(e)); }
+      finally { p.bmp.close(); p.big.close(); }
+    }
+    state.exampleUse.push(use);
+    if (examples.length) folders.push({ name: f.name, examples });
+  }
+  return folders;
+}
+
 /* ---------- Review: the plan, a grid per proposed folder ---------- */
 
-function toCopy() { return state.plan.filter((p) => p.category !== STAY); }
+function toCopy() { return state.plan.filter((p) => p.category !== state.stay); }
 
 function renderReview() {
   const box = $('#groups');
   box.replaceChildren();
-  for (const c of CATEGORIES) {
-    const items = state.plan.map((p, i) => [p, i]).filter(([p]) => p.category === c);
+  for (const c of state.cats) {
+    let items = state.plan.map((p, i) => ({ p, i, score: p.score })).filter((x) => x.p.category === c);
     if (!items.length) continue;
+    if (state.runBy === 'example') items = core.leastSureFirst(items);
     const g = document.createElement('section'); g.className = 'group'; g.dataset.category = c;
     const head = document.createElement('div'); head.className = 'group-head';
     const t = document.createElement('span'); t.className = 'edge'; t.textContent = c + ' ▸ ' + items.length;
     head.append(t);
-    if (c === STAY) { const s = document.createElement('span'); s.className = 'edge note-stay'; s.textContent = 'stay here, not copied'; head.append(s); }
+    if (c === state.stay) { const s = document.createElement('span'); s.className = 'edge note-stay'; s.textContent = 'stay here, not copied'; head.append(s); }
     const grid = document.createElement('div'); grid.className = 'grid';
-    for (const [p, i] of items) {
+    for (const { p, i } of items) {
       const b = document.createElement('button');
       b.className = 'ph' + (p.category !== p.first ? ' changed' : '');
       b.dataset.index = i;
@@ -1295,9 +1502,9 @@ function openSheet(i) {
   $('#sheet-why').textContent = 'filter said ' + p.first + ': ' + p.reason;
   const box = $('#sheet-targets');
   box.replaceChildren();
-  for (const c of CATEGORIES) {
+  for (const c of state.cats) {
     const b = document.createElement('button');
-    b.textContent = c === STAY ? 'other (stays)' : c;
+    b.textContent = c === state.stay ? c + ' (stays)' : c;
     b.dataset.category = c;
     b.setAttribute('aria-pressed', String(p.category === c));
     b.addEventListener('click', () => { state.plan[sheetIndex].category = c; closeSheet(); renderReview(); });
@@ -1331,9 +1538,10 @@ async function runCopy() {
   const total = items.length;
   const t0 = now();
   const log = {
-    app: 'filter', version: APP_VERSION, mode: 'copy', folder: root.name,
+    app: 'filter', version: APP_VERSION, mode: 'copy', by: state.runBy, folder: root.name,
     started: new Date().toISOString(), recognition: state.lastRun, items: [],
   };
+  if (state.runBy === 'example') log.examples = state.exampleUse;
   const out = { copied: 0, skipped: 0, failed: null };
   $('#copy-count').textContent = '0 / ' + total;
   $('#copy-fill').style.width = '0';
@@ -1363,7 +1571,8 @@ async function runCopy() {
     out.failed = { name: '(folder)', step: 'making a folder', reason: errText(e), copyMade: false };
   }
   // Every photo's decision, copied or not, so a run can be checked and the rules tuned.
-  log.decisions = state.plan.map((p) => ({ name: p.name, folder: p.category, suggested: p.first, reason: p.reason }));
+  log.decisions = state.plan.map((p) => ({ name: p.name, folder: p.category, suggested: p.first, reason: p.reason,
+    ...(state.runBy === 'example' ? { best: p.best || null, next: p.next || null } : {}) }));
   log.finished = new Date().toISOString();
   log.result = { copied: out.copied, skipped: out.skipped, stayed: state.plan.length - total, stopped: out.failed ? out.failed.name + ': ' + out.failed.reason : null };
   let logName = null, logError = null;
@@ -1384,10 +1593,10 @@ function showDone(out, logName, logError, ms, total) {
   rows($('#done-rows'), [
     ['Copied', out.copied + ' of ' + total + ', each read back and checked (size and SHA-256)', f ? 'watch' : 'pass'],
     ['Already there', String(out.skipped)],
-    ['Stayed', (state.plan.length - total) + ' in other, not copied'],
+    ['Stayed', (state.plan.length - total) + ' in ' + state.stay + ', not copied'],
     ['You changed', changed + ' of ' + state.plan.length],
     ['Copy time', fmtS(ms)],
-    ['Recognition', state.lastRun ? fmtS(state.lastRun.perPhotoMs) + ' per photo, closer look for ' + state.lastRun.closer + ' of ' + state.lastRun.photos : 'none'],
+    ['Recognition', state.lastRun ? fmtS(state.lastRun.perPhotoMs) + ' per photo, ' + (state.lastRun.by === 'example' ? 'by example' : 'closer look for ' + state.lastRun.closer + ' of ' + state.lastRun.photos) : 'none'],
     ['Log', logName || 'NOT written: ' + logError, logName ? undefined : 'fail'],
   ]);
   $('#details-text').textContent = runDetails();
@@ -1395,15 +1604,21 @@ function showDone(out, logName, logError, ms, total) {
 }
 
 // The run as plain text: one line per photo with its folder and the reason, for
-// pasting back to Claude when a photo went to the wrong folder. Names and reasons only.
+// pasting back to Claude when a photo went to the wrong folder. Names and reasons
+// only. By example, each reason holds the best folder's score and the runner-up's.
 function runDetails() {
   const r = state.lastRun || {};
-  const head = 'filter v' + APP_VERSION + (state.recheck ? ' re-check' : ' run') + ' ' + fmtDate(Date.now()) + ' ' + fmtTime(Date.now()) + ', ' + state.plan.length + ' photos, ' +
-    fmtS(r.perPhotoMs || 0) + ' per photo, closer look for ' + (r.closer || 0);
-  return [head].concat(state.plan.map((p) => {
-    const was = state.wasIn.get(p.name);
-    return p.name + ' ▸ ' + p.category + (p.category !== p.first ? ' (filter said ' + p.first + ')' : '') + ': ' + p.reason + (was ? ' [already in ' + was + ']' : '');
-  })).join('\n');
+  const ex = state.runBy === 'example';
+  const head = 'filter v' + APP_VERSION + (state.recheck ? ' re-check' : ' run') + (ex ? ' by example' : '') + ' ' + fmtDate(Date.now()) + ' ' + fmtTime(Date.now()) + ', ' + state.plan.length + ' photos, ' +
+    fmtS(r.perPhotoMs || 0) + ' per photo, ' + (ex ? 'examples ' + state.exampleUse.map((u) => u.folder + ' ' + u.used.length).join(', ') +
+      ', bars ' + RULES.minSim.toFixed(2) + ' and gap ' + RULES.minGap.toFixed(2) : 'closer look for ' + (r.closer || 0));
+  const lines = state.plan.map((p) => {
+    const was = state.wasIn.get(p.name), of = ex && state.exampleOf.get(p.name);
+    return p.name + ' ▸ ' + p.category + (p.category !== p.first ? ' (filter said ' + p.first + ')' : '') + ': ' + p.reason +
+      (was ? ' [already in ' + was + ']' : '') + (of ? ' [example of ' + of + ']' : '');
+  });
+  const failed = ex ? state.exampleUse.flatMap((u) => u.failed.map((f) => 'example not used: ' + u.folder + '/' + f)) : [];
+  return [head].concat(lines, failed).join('\n');
 }
 
 /* ---------- Wiring ---------- */
@@ -1431,6 +1646,8 @@ async function copyDetails(panel, pre) {
 $('#btn-details').addEventListener('click', () => copyDetails($('#done-details'), $('#details-text')));
 $('#btn-review-details').addEventListener('click', () => copyDetails($('#review-details'), $('#review-details-text')));
 $('#recheck').addEventListener('change', setupChoice);
+$('#by-description').addEventListener('click', () => rememberBy('description'));
+$('#by-example').addEventListener('click', () => rememberBy('example'));
 
 // Two taps to start over, so a stray tap does not lose a reviewed plan.
 let restartArmed = 0;
@@ -1487,7 +1704,7 @@ $('#btn-install').addEventListener('click', async () => {
 
 /* ---------- Start ---------- */
 
-window.filter = { core, config, RULES, LABEL_GROUPS, CLOTHES, OBJECT_GROUPS, CATEGORIES, recog, state, show, runDetails };
+window.filter = { core, config, RULES, LABEL_GROUPS, CLOTHES, OBJECT_GROUPS, CATEGORIES, EXAMPLES, UNSURE, RESERVED, recog, state, show, runDetails };
 
 show('start');
 window.filterReady = task('opening', boot);

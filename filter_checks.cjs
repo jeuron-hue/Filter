@@ -9,8 +9,9 @@
 //     and every sha256 recorded there matches the file
 //   - the vendored MediaPipe code holds no telemetry and no other site to call
 //   - the service worker caches everything and its version matches APP_VERSION
-//   - F1 copies only: nothing is deleted, and files are written only by the
-//     safe copy and the run log
+//   - copies only (F1, F2): nothing is deleted, files are written only by the
+//     safe copy and the run log, and folders are made only for copies and the
+//     log, never filter-examples/ (Gary's examples are read only)
 //   - the sorting rules' label names match the labels inside the two models
 //   - every image in the repo carries no EXIF, XMP, IPTC, GPS or text chunks
 //
@@ -283,7 +284,7 @@ function runChecks() {
     assert(guard > 0 && guard < sw.indexOf('fetch(req)'), 'sw.js must return early for other origins before any fetch');
   });
 
-  check('F1 copies only: nothing is deleted, files are written only by the safe copy and the run log', () => {
+  check('copies only: nothing is deleted, files are written only by the safe copy and the run log', () => {
     const js = stripComments(scriptOf(read('filter.html')));
     const noClass = js.replace(/classList\.remove\(/g, '');     // removing a CSS class is not a file operation
     for (const banned of [/\.removeEntry\(/, /\.remove\(/, /recursive/, /\.move\(/, /keepExistingData/]) {
@@ -301,6 +302,20 @@ function runChecks() {
     // In the safe copy: read, refuse an existing name, write, read back, compare size, then SHA-256.
     const order = ['src.getFile()', 'core.exists(toDir, name)', 'createWritable(', 'dst.getFile()', 'copy.size !== orig.size', 'log.copySha256 !== log.sha256', "at('done')"].map((x) => safeCopy.indexOf(x));
     assert(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1])), 'core.safeCopy must read, check the target, copy, read back, compare size, compare SHA-256, in that order');
+  });
+
+  check('filter-examples is read only: folders are made only for copies and the log, and its name is reserved', () => {
+    const js = stripComments(scriptOf(read('filter.html')));
+    const runCopy = bodyOf(js, /async function runCopy\(/);
+    const writeLog = bodyOf(js, /async function writeLog\(/);
+    const mk = /getDirectoryHandle\([^)]*create: true/g;
+    const count = (str) => (str.match(mk) || []).length;
+    assert(count(runCopy) === 1 && count(writeLog) === 1 && count(js) === 2,
+      'getDirectoryHandle(..., { create: true }) may appear once in runCopy and once in writeLog, nowhere else');
+    assert(/getDirectoryHandle\(p\.category, \{ create: true \}\)/.test(runCopy), 'runCopy makes only the folder a photo is copied to');
+    assert(/getDirectoryHandle\(LOG_FOLDER, \{ create: true \}\)/.test(writeLog), 'writeLog makes only filter-logs');
+    assert(/const EXAMPLES = 'filter-examples';/.test(js), 'EXAMPLES must be filter-examples');
+    assert(/const RESERVED = \[STAY, UNSURE, LOG_FOLDER, EXAMPLES\];/.test(js), 'example folders may not be named other, unsure, filter-logs or filter-examples');
   });
 
   check('label groups match the labels inside the classifier model', () => {
@@ -343,7 +358,8 @@ function runChecks() {
     assert(a > 0 && b > a, 'CORE markers missing or out of order');
     assert(html.split('// CORE:BEGIN').length === 2 && html.split('// CORE:END').length === 2, 'CORE markers must appear once each');
     const core = html.slice(a, b);
-    for (const f of ['safeCopy', 'categorize', 'imageInfo', 'pickNewest', 'readBatch', 'facesFrom', 'objectsFrom', 'normBoxes', 'dedupe', 'closerPeople', 'grid', 'textLike', 'mapAhead']) {
+    for (const f of ['safeCopy', 'categorize', 'imageInfo', 'pickNewest', 'readBatch', 'facesFrom', 'objectsFrom', 'normBoxes', 'dedupe', 'closerPeople', 'grid', 'textLike', 'mapAhead',
+      'cosine', 'nearest', 'exampleProblem', 'leastSureFirst']) {
       assert(new RegExp('core\\.' + f + ' = ').test(core), 'core.' + f + ' must sit inside CORE');
     }
   });
@@ -369,8 +385,10 @@ function runChecks() {
     const listed = Array.from(notes.matchAll(/vendor\/\S+/g)).map((m) => m[0]);
     const ghost = listed.filter((f) => !exists(f));
     assert(!ghost.length, 'build notes list files that do not exist: ' + ghost.join(', '));
-    const licence = notes.split('\n').find((l) => l.includes('vendor/mediapipe/efficientnet_lite0.tflite '));
-    assert(/Apache-2\.0/.test(licence || ''), 'the classifier model line must state its licence');
+    for (const m of ['efficientnet_lite0', 'blaze_face_short_range', 'efficientdet_lite0', 'mobilenet_v3_large']) {
+      const licence = notes.split('\n').find((l) => l.includes('vendor/mediapipe/' + m + '.tflite '));
+      assert(/Apache-2\.0/.test(licence || ''), 'the ' + m + ' model line must state its licence');
+    }
     return vendored.length + ' vendored files';
   });
 
