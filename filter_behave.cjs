@@ -883,7 +883,7 @@ test('nearest: the closest example decides, each bar at its edge, unsure when li
   eq(r.emptyBeside, ['receipts', 'receipts 1.00 (like a1.jpg), no other folder'], 'a folder with no examples is not a runner-up');
   eq(r.best, { folder: 'receipts', score: 1, example: 'a1.jpg' }, 'best kept for the details');
   eq(r.next, { folder: 'hawker food', score: 0.8, example: 'b1.jpg' }, 'runner-up kept for the details');
-  eq(r.defaults, [0.5, 0.05], 'starting bars');
+  eq(r.defaults, [0.35, 0.05], 'the bars set from Gary\'s first two runs');
   await ctx.close();
 }, { core: true });
 
@@ -1185,10 +1185,15 @@ test('a re-check includes photos already sorted, copies nothing, and says where 
   await sort(page, 3);
   await run(page, '#btn-copy');
   await run(page, '#btn-again');
-  eq(await page.evaluate(() => [document.querySelector('#newest').value, document.querySelector('#btn-sort').textContent]), ['7', 'Sort photos'], 'a normal run counts the 7 not yet sorted');
+  eq(await page.evaluate(() => [document.querySelector('#newest').value, document.querySelector('#btn-sort').textContent]), ['3', 'Sort photos'], 'the 3 typed for the last run is kept');
   await page.check('#recheck');
   eq(await page.evaluate(() => [document.querySelector('#newest').value, document.querySelector('#btn-sort').textContent, document.querySelector('#btn-sort').disabled]),
-    ['10', 'Re-check photos', false], 'a re-check counts all 10');
+    ['3', 'Re-check photos', false], 'ticking re-check keeps the number typed (Gary, 30/10/26)');
+  await page.fill('#newest', '50');
+  await page.uncheck('#recheck');
+  eq(await page.evaluate(() => document.querySelector('#newest').value), '7', 'more than there are: shows the 7 not yet sorted');
+  await page.check('#recheck');
+  eq(await page.evaluate(() => document.querySelector('#newest').value), '10', 'a re-check counts all 10');
   const before = await camTree(page);
   await sort(page, 4);
   eq(Object.values(await plan(page)).flat().sort(), ['PXL_20261029_100700000.jpg', 'PXL_20261029_100800000.jpg', 'PXL_20261029_100900000.jpg', 'PXL_20261029_101000000.jpg'],
@@ -1204,7 +1209,10 @@ test('a re-check includes photos already sorted, copies nothing, and says where 
   eq(await camTree(page), before, 'nothing written by a re-check');
   await page.click('#btn-restart'); await page.click('#btn-restart');
   await page.uncheck('#recheck');
-  eq(await page.evaluate(() => document.querySelector('#newest').value), '7', 'switch off: back to the photos not yet sorted');
+  eq(await page.evaluate(() => document.querySelector('#newest').value), '4', 'switch off: the 4 typed for the re-check is kept');
+  await page.fill('#newest', '2');
+  await page.check('#recheck');
+  eq(await page.evaluate(() => document.querySelector('#newest').value), '2', 'a smaller number typed is kept as it is');
   await ctx.close();
 });
 
@@ -1359,8 +1367,9 @@ async function openExamples(page, opts = {}) {
   }, opts);
   await run(page, '#btn-pick');
 }
-// By example, with the bar lowered to 0.40 so magenta (0.50 to red and to blue) is
-// decided by the gap alone, whatever the JPEG does to its last digit.
+// By example, with the bar at 0.40 so magenta (0.50 to red and to blue) is decided
+// by the gap alone, whatever the JPEG does to its last digit, and the bar shown in
+// the details differs from the phone's.
 async function sortByExample(page, n) {
   await page.click('#by-example');
   await page.evaluate(() => { window.filter.RULES.minSim = 0.4; });
@@ -1388,9 +1397,11 @@ test('setup: example folders are read from filter-examples, odd ones listed as n
   }));
   let s = await seg();
   eq([s.desc, s.ex, s.exOff, s.watch, s.small], ['true', 'false', false, 'v watch', []], 'by description first; by example offered; examples flagged; tap targets');
+  await page.fill('#newest', '4');
   await page.click('#by-example');
   s = await seg();
   eq([s.desc, s.ex], ['false', 'true'], 'by example chosen');
+  eq(await page.evaluate(() => document.querySelector('#newest').value), '4', 'the number typed is kept when the mode changes');
   eq(s.by, 'Each photo is compared with your examples in filter-examples/ and goes to the closest folder, or stays as unsure.', 'caption');
   eq(s.copies, 'Copies go into subfolders here named like your example folders: blue sky, green, red. Unsure photos stay where they are. Nothing is moved or deleted.', 'where copies go');
   eq(await page.evaluate(() => window.filter.state.examples.map((f) => [f.name, f.files.map((x) => x.name)])),
@@ -1565,6 +1576,9 @@ test('real embedder: drawn patterns go to the folder of their own pattern, a pat
   });
   await run(page, '#btn-pick');
   await page.click('#by-example');
+  // Drawn patterns score higher with each other than photos do (dots 0.44 to checks),
+  // so this test of the embedder keeps its own bar; the phone's is set from Gary's runs.
+  await page.evaluate(() => { window.filter.RULES.minSim = 0.5; });
   await sort(page);
   eq(await screen(page), 'review', 'screen');
   const r = await page.evaluate(() => window.filter.state.plan.map((p) => [p.name, p.category, p.reason]));
