@@ -19,7 +19,7 @@ not copied. Every copy is read back and checked byte for byte (size and SHA-256)
 filter never deletes or overwrites anything, and never writes to filter-examples/.
 Each run writes a log to filter-logs/ in the picked folder.
 
-APP_VERSION 0.3.0 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.3.1 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -356,7 +356,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.3.1';
 
 // The folders filter knows, in the order they are shown. Photos and videos in
 // "other" stay where they are: nothing is copied for them.
@@ -387,6 +387,8 @@ const config = {
   closeTile: 0.45,      // ... each this share of the photo's width and height
   frameAt: [0.1, 0.5, 0.9],   // a video is seen as its frames this far through
   videoWaitMs: 20000,   // a video that does not open or seek in this time is left where it is
+  frameTries: 3,        // a frame the browser will not hand over is tried this many times,
+  frameNudge: 0.1,      // ... each this many seconds later than the last
 };
 
 // The rules that turn what the models see into a folder. Each threshold is named
@@ -1490,8 +1492,7 @@ async function videoFrames(entry) {
     if (!times.length) throw new Error('its length cannot be read');
     const k = Math.min(1, config.closeSide / Math.max(w, h));
     for (const at of times) {
-      await mediaEvent(v, 'seeked', () => { v.currentTime = at; });
-      const f = { at, big: await createImageBitmap(v, { resizeWidth: Math.max(1, Math.round(w * k)), resizeHeight: Math.max(1, Math.round(h * k)), resizeQuality: 'medium' }) };
+      const f = { at, big: await frameAt(v, at, { resizeWidth: Math.max(1, Math.round(w * k)), resizeHeight: Math.max(1, Math.round(h * k)), resizeQuality: 'medium' }) };
       frames.push(f);
       f.bmp = await smaller(f.big);
     }
@@ -1503,6 +1504,24 @@ async function videoFrames(entry) {
     v.removeAttribute('src');
     v.load();
     if (url) URL.revokeObjectURL(url);
+  }
+}
+
+// The frame at `at` seconds. A seek can say it is done before the frame is
+// decoded: Gary's first run (30/10/26) had one ordinary FHD video refused with
+// "the image source is not usable". So this waits until a frame is there, and
+// if taking it still fails, seeks again a little later (config.frameNudge
+// seconds each time) up to config.frameTries times in all.
+async function frameAt(v, at, opts) {
+  for (let k = 0; ; k++) {
+    const t = Math.min(at + k * config.frameNudge, v.duration);
+    await mediaEvent(v, 'seeked', () => { v.currentTime = t; });
+    try {
+      if (v.readyState < 2) await mediaEvent(v, 'canplay', () => {});
+      return await createImageBitmap(v, opts);
+    } catch (e) {
+      if (k + 1 >= config.frameTries) throw e;
+    }
   }
 }
 
@@ -1699,10 +1718,11 @@ async function exampleVectors(kinds) {
 
 function toCopy() { return state.plan.filter((p) => p.category !== state.stay); }
 
-// "10 photos, 3 videos", leaving out videos when there are none.
+// "10 photos, 3 videos", leaving out a kind there is none of (Gary's first video
+// run said "0 photos, 20 videos"); "0 photos" when there is nothing at all.
 function countText(items) {
-  const v = items.filter((p) => p.kind === 'video').length;
-  return plural(items.length - v, 'photo') + (v ? ', ' + plural(v, 'video') : '');
+  const v = items.filter((p) => p.kind === 'video').length, n = items.length - v;
+  return [n || !v ? plural(n, 'photo') : null, v ? plural(v, 'video') : null].filter(Boolean).join(', ');
 }
 const fmtDur = (s) => Math.floor(s / 60) + ':' + pad2(Math.floor(s % 60));
 

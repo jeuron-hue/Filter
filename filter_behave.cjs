@@ -1243,6 +1243,46 @@ test('run and review: each photo lands in the right folder, grid per folder, oth
   await ctx.close();
 });
 
+test('a video frame the browser refuses at first is tried again a little later; one it always refuses leaves the video in other', async () => {
+  const { ctx, page } = await newApp();
+  await openCamera(page);
+  // Like Gary's first video run (30/10/26): the seek is done, but the frame is "not usable".
+  await page.evaluate(() => {
+    const real = window.createImageBitmap;
+    window.__refused = [];
+    window.__refuse = 'first';
+    window.createImageBitmap = (src, ...rest) => {
+      if (src instanceof HTMLVideoElement) {
+        const again = window.__refused.length && window.__refused[window.__refused.length - 1].src === src && window.__refused[window.__refused.length - 1].done === false;
+        if (window.__refuse === 'always' || (window.__refuse === 'first' && !again)) {
+          window.__refused.push({ src, at: src.currentTime, done: false });
+          return Promise.reject(new DOMException("Failed to execute 'createImageBitmap' on 'Window': The image source is not usable.", 'InvalidStateError'));
+        }
+        if (again) window.__refused[window.__refused.length - 1].done = true;
+      }
+      return real(src, ...rest);
+    };
+  });
+  await sort(page);
+  let p = await page.evaluate(() => Object.fromEntries(window.filter.state.plan.filter((x) => x.kind === 'video').map((x) => [x.name, [x.category, x.reason]])));
+  eq(p['PXL_20261029_095200000.webm'], ['people', '2 of 3 frames people: 1 face, 0.90'], 'every frame refused once, then taken 0.1 s later');
+  eq(p['PXL_20261029_095100000.webm'], ['other', 'frames disagree: people, other, pets'], 'the other video too');
+  eq(await page.evaluate(() => window.__refused.length), 6, 'each of the 6 frames refused once');
+  await page.click('#btn-restart'); await page.click('#btn-restart');
+  await page.evaluate(() => { window.__refused = []; window.__refuse = 'always'; });
+  await sort(page);
+  p = await page.evaluate(() => Object.fromEntries(window.filter.state.plan.filter((x) => x.kind === 'video').map((x) => [x.name, [x.category, x.reason]])));
+  for (const n of ['PXL_20261029_095200000.webm', 'PXL_20261029_095100000.webm']) {
+    eq(p[n][0], 'other', n + ' stays');
+    assert(/^could not open: InvalidStateError: .*not usable\.$/.test(p[n][1]), n + ': ' + p[n][1]);
+  }
+  const at = await page.evaluate(() => window.__refused.map((r) => r.at));
+  eq(at.length, 6, 'three tries for the first frame of each video, then it gives up');
+  assert(Math.abs(at[1] - at[0] - 0.1) < 0.02 && Math.abs(at[2] - at[0] - 0.2) < 0.02, 'each try 0.1 s later: ' + at.join(', '));
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
 test('review: tapping a photo and choosing a folder sends it there, marked in amber', async () => {
   const { ctx, page } = await newApp();
   await openCamera(page);
@@ -1810,6 +1850,8 @@ test('real models: a video is seen by its frames, by description and by example'
   console.log('      real models on a drawn clip: ' + r.map((x) => x[0] + ' (' + x[1] + ')').join('; '));
   eq(r.length, 1, 'the video');
   assert(r[0][2] && r[0][3] === 3 && /^(\d of 3 frames \w+: |frames disagree: )/.test(r[0][1]), 'three frames recognised and voted on: ' + r[0][1]);
+  const head = (await page.evaluate(() => window.filter.runDetails())).split('\n')[0];
+  assert(/ hrs, 1 video, [\d.]+ s per video, closer look for \d$/.test(head), 'a run of videos only says nothing of photos: ' + head);
   await page.click('#btn-restart'); await page.click('#btn-restart');
   await page.click('#by-example');
   await sort(page);
