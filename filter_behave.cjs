@@ -629,7 +629,7 @@ test('frameTimes, videoVote and meanVec: frames at 10, 50 and 90 %, more than ha
       at,
       votes: [
         v([f('people', '1 face, 0.90'), f('pets'), f('people', '2 faces, 0.95')]),
-        v([f('other'), f('people'), f('other', 'nothing clear')]),
+        v([f('people'), f('other', 'nothing clear'), f('other')]),
         v([f('people'), f('pets'), f('food')]),
         v([f('pets'), f('pets'), f('pets', 'dog 0.80')]),
         v([f('people'), f('pets')]),
@@ -644,7 +644,7 @@ test('frameTimes, videoVote and meanVec: frames at 10, 50 and 90 %, more than ha
   eq(r.times, [[2, 10, 18], [], [], [], []], 'times in seconds; none for a video whose length is not a real number');
   eq(r.votes, [
     ['people', '2 of 3 frames people: 1 face, 0.90'],
-    ['other', '2 of 3 frames other: other why'],
+    ['other', '2 of 3 frames other: nothing clear'],
     ['other', 'frames disagree: people, pets, food'],
     ['pets', '3 of 3 frames pets: pets why'],
     ['other', 'frames disagree: people, pets'],

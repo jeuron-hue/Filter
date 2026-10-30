@@ -151,7 +151,7 @@ ahead: no refill ||| const r = await pending.shift();\n    fill(); ||| const r =
 copy: listed names ignored ||| if ((opts.existing && opts.existing.has(name)) || ||| if (false ||
 copy: no lookup in the target ||| || await core.exists(toDir, name)) { ||| ) {
 copy: reads back the original ||| const copy = await dst.getFile(); ||| const copy = await src.getFile();
-copy: hashes the original twice ||| log.copySha256 = await core.sha256(copy); ||| log.copySha256 = await core.sha256(orig);
+copy: hashes the original twice ||| log.copySha256 = await core.sha256(copy, ||| log.copySha256 = await core.sha256(orig,
 copy: size check skipped ||| if (copy.size !== orig.size) { log.reason ||| if (false) { log.reason
 copy: hash check skipped ||| if (log.copySha256 !== log.sha256) { log.reason = 'SHA-256 differs'; return log; } ||| if (false) { log.reason = 'SHA-256 differs'; return log; }
 copy: mismatch carries on ||| log.reason = 'SHA-256 differs'; return log; } ||| log.reason = 'SHA-256 differs'; }
