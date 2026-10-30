@@ -883,7 +883,7 @@ test('nearest: the closest example decides, each bar at its edge, unsure when li
   eq(r.emptyBeside, ['receipts', 'receipts 1.00 (like a1.jpg), no other folder'], 'a folder with no examples is not a runner-up');
   eq(r.best, { folder: 'receipts', score: 1, example: 'a1.jpg' }, 'best kept for the details');
   eq(r.next, { folder: 'hawker food', score: 0.8, example: 'b1.jpg' }, 'runner-up kept for the details');
-  eq(r.defaults, [0.35, 0.05], 'the bars set from Gary\'s first two runs');
+  eq(r.defaults, [0.32, 0.05], 'the bars set from Gary\'s first three runs');
   await ctx.close();
 }, { core: true });
 
