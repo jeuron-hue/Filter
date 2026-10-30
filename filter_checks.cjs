@@ -9,7 +9,7 @@
 //     and every sha256 recorded there matches the file
 //   - the vendored MediaPipe code holds no telemetry and no other site to call
 //   - the service worker caches everything and its version matches APP_VERSION
-//   - copies only (F1, F2): nothing is deleted, files are written only by the
+//   - copies only (F1 to F3): nothing is deleted, files are written only by the
 //     safe copy and the run log, and folders are made only for copies and the
 //     log, never filter-examples/ (Gary's examples are read only)
 //   - the sorting rules' label names match the labels inside the two models
@@ -359,7 +359,7 @@ function runChecks() {
     assert(html.split('// CORE:BEGIN').length === 2 && html.split('// CORE:END').length === 2, 'CORE markers must appear once each');
     const core = html.slice(a, b);
     for (const f of ['safeCopy', 'categorize', 'imageInfo', 'pickNewest', 'readBatch', 'facesFrom', 'objectsFrom', 'normBoxes', 'dedupe', 'closerPeople', 'grid', 'textLike', 'mapAhead',
-      'cosine', 'nearest', 'exampleProblem', 'leastSureFirst']) {
+      'cosine', 'nearest', 'exampleProblem', 'leastSureFirst', 'sha256', 'sha256Stream', 'meanVec', 'frameTimes', 'videoVote']) {
       assert(new RegExp('core\\.' + f + ' = ').test(core), 'core.' + f + ' must sit inside CORE');
     }
   });
