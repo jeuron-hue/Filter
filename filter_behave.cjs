@@ -324,7 +324,9 @@ function pageFixtures() {
       return d;
     },
     // A folder handle with a fault planted. ops records every call, labelled.
-    // sub: faults for subfolders by name, e.g. { pets: 'flip' }.
+    // sub: faults for subfolders by name, e.g. { pets: 'flip' }. 'keepOriginals'
+    // on a folder: its files say they are deleted but stay (handle.remove and
+    // removeEntry do nothing), for the check that originals are gone.
     wrap(dir, fault, ops = [], label = dir.name, sub = {}) {
       const wrapFile = (fh, name) => ({
         kind: 'file', name: fh.name,
@@ -347,15 +349,19 @@ function pageFixtures() {
         },
       });
       const self = this;
+      const keep = (h) => (h.kind !== 'file' ? h : { kind: 'file', name: h.name, getFile: () => h.getFile(),
+        async remove() { ops.push(label + ' remove (kept) ' + h.name); } });
       return {
         kind: 'directory', name: dir.name,
         async getFileHandle(n, o) { ops.push(label + ' getFileHandle ' + n + (o && o.create ? ' create' : '')); return wrapFile(await dir.getFileHandle(n, o), n); },
+        async removeEntry(n, o) { ops.push(label + ' removeEntry ' + n); if (fault !== 'keepOriginals') return dir.removeEntry(n, o); },
         async getDirectoryHandle(n, o) {
           const d = await dir.getDirectoryHandle(n, o);
           return sub[n] ? self.wrap(d, sub[n], ops, n) : d;
         },
         values() {
           const it = dir.values();
+          if (fault === 'keepOriginals') return { async next() { const r = await it.next(); return r.done ? r : { done: false, value: keep(r.value) }; }, [Symbol.asyncIterator]() { return this; } };
           if (!fault || !fault.startsWith('stallAfter')) return it;
           const k = +fault.slice(10); let i = 0;
           return { next() { return i++ >= k ? new Promise(() => {}) : it.next(); }, [Symbol.asyncIterator]() { return this; } };
@@ -449,12 +455,12 @@ async function clipBytes(page, segments, opts = {}) {
 }
 const RED = '#ff0000', GREEN = '#00ff00', BLUE = '#0000ff';
 // Seed the standard camera folder and pick it. sub: faults for filter's subfolders.
-async function openCamera(page, sub = null) {
+async function openCamera(page, sub = null, fault = null) {
   const clips = { rrb: await clipBytes(page, [RED, RED, BLUE]), rgb: await clipBytes(page, [RED, GREEN, BLUE]) };
-  await page.evaluate(async ([sub, clips]) => {
+  await page.evaluate(async ([sub, clips, fault]) => {
     const cam = await window.__fx.camera(clips);
-    window.__pick = sub ? window.__fx.wrap(cam, null, [], cam.name, sub) : cam;
-  }, [sub, clips]);
+    window.__pick = sub || fault ? window.__fx.wrap(cam, fault, window.__ops = [], cam.name, sub || {}) : cam;
+  }, [sub, clips, fault]);
   await run(page, '#btn-pick');
 }
 async function sort(page, n) {
@@ -1162,6 +1168,165 @@ test('safe copy: a refused write and a missing original are reported, never thro
   await ctx.close();
 }, { core: true });
 
+/* ---------- Core: the safe move and undo (F4) ---------- */
+
+// Runs core.safeMove in the page on a fresh A -> A/to pair holding one file of
+// random bytes. fault: for the target folder, as in copyCase. byName: the
+// original's handle has no remove() of its own (deleted by name in its folder).
+// src: 'changes' (the original changes during the copy), 'refuses' (its delete
+// fails), 'unsupported' (its own remove() is not supported).
+async function moveCase(page, { size = 300000, fault = null, existing = false, byName = false, src = null } = {}) {
+  return page.evaluate(async ({ size, fault, existing, byName, src }) => {
+    const fx = window.__fx, c = window.filter.core;
+    const tag = 'M' + Math.random().toString(36).slice(2, 8);
+    const from = await fx.dir(tag), to = await fx.dir(tag + '/to');
+    const name = 'PXL_20261031_101500123.jpg';
+    const bytes = fx.noise(size, 11);
+    await fx.put(from, name, bytes);
+    const ops = [], steps = [];
+    const fromW = fx.wrap(from, null, ops, 'from');
+    const real = await from.getFileHandle(name);
+    let h = real, reads = 0;
+    if (byName) h = { kind: 'file', name, getFile: () => real.getFile() };
+    if (src === 'changes') h = { kind: 'file', name, async getFile() { const f = await real.getFile(); return reads++ ? new File([f], name, { lastModified: f.lastModified + 1000 }) : f; }, async remove() { ops.push('remove'); return real.remove(); } };
+    if (src === 'refuses') h = { kind: 'file', name, getFile: () => real.getFile(), async remove() { throw new DOMException('the file is in use', 'NoModificationAllowedError'); } };
+    if (src === 'unsupported') h = { kind: 'file', name, getFile: () => real.getFile(), async remove() { ops.push('remove tried'); throw new DOMException('not here', 'NotSupportedError'); } };
+    const t = fx.wrap(to, fault, ops, 'to');
+    const log = await c.safeMove(h, name, fromW, t, { existing: new Set(existing ? [name] : []), onStep: (st) => steps.push(st) });
+    return {
+      log, ops, steps, name,
+      srcSha: await fx.sha(new Blob([bytes])),
+      fromSha: (await fx.has(from, name)) ? await fx.shaOf(from, name) : null,
+      toSha: (await fx.has(to, name)) ? await fx.shaOf(to, name) : null,
+    };
+  }, { size, fault, existing, byName, src });
+}
+
+test('safe move: copies, reads the copy back, checks it, and only then deletes the original through its own handle', async () => {
+  const { ctx, page } = await newApp();
+  const r = await moveCase(page);
+  const L = r.log;
+  eq([L.ok, L.moved, L.copyMade, L.skipped, L.deletedBy, L.step], [true, true, true, false, 'handle', 'done'], 'outcome');
+  eq([L.sha256, L.copySha256, r.toSha, r.fromSha], [r.srcSha, r.srcSha, r.srcSha, null], 'the copy is byte-identical and the original gone');
+  eq(r.steps, ['read original', 'check target', 'copy', 'read back', 'compare', 'check original', 'delete original', 'done'], 'each step in order');
+  assert(!r.ops.some((o) => /removeEntry/.test(o)), 'no lookup by name: ' + r.ops.join(', '));
+  for (const k of ['hash', 'copy', 'readBack', 'delete']) assert(typeof L.ms[k] === 'number' && L.ms[k] >= 0, 'time for ' + k);
+  const b = await moveCase(page, { byName: true });
+  eq([b.log.ok, b.log.deletedBy, b.fromSha, b.toSha], [true, 'name', null, b.srcSha], 'no remove() of its own: deleted by name');
+  assert(b.ops.includes('from removeEntry ' + b.name), 'by name in its folder: ' + b.ops.join(', '));
+  const u = await moveCase(page, { src: 'unsupported' });
+  eq([u.log.ok, u.log.deletedBy, u.fromSha], [true, 'name', null], 'remove() not supported: deleted by name');
+  await ctx.close();
+}, { core: true });
+
+test('safe move: a bad copy, a short copy, a failed write or a name already there deletes nothing', async () => {
+  const { ctx, page } = await newApp();
+  for (const [fault, step] of [['flip', 'compare'], ['truncate', 'compare'], ['failMidWrite', 'copy'], ['throwWrite', 'copy']]) {
+    const r = await moveCase(page, { fault });
+    eq([r.log.ok, r.log.moved, r.log.step, r.fromSha], [false, false, step, r.srcSha], fault + ': stopped, the original untouched');
+    assert(!r.log.deletedBy && !r.ops.some((o) => /remove/.test(o)), fault + ': no delete tried');
+  }
+  const s = await moveCase(page, { existing: true });
+  eq([s.log.ok, s.log.skipped, s.log.moved, s.fromSha, s.toSha], [false, true, false, s.srcSha, null], 'already there: skipped, nothing written or deleted');
+  await ctx.close();
+}, { core: true });
+
+test('safe move: an original that changed during the copy is kept, and a refused delete is reported, never thrown', async () => {
+  const { ctx, page } = await newApp();
+  const c = await moveCase(page, { src: 'changes' });
+  eq([c.log.ok, c.log.moved, c.log.step, c.log.reason], [false, false, 'check original', 'the original changed during the copy'], 'changed: stopped');
+  eq([c.fromSha, c.toSha], [c.srcSha, c.srcSha], 'both kept');
+  assert(!c.ops.includes('remove'), 'no delete tried');
+  const f = await moveCase(page, { src: 'refuses' });
+  eq([f.log.ok, f.log.moved, f.log.step], [false, false, 'delete original'], 'refused delete');
+  assert(/^NoModificationAllowedError: the file is in use/.test(f.log.reason), 'reason: ' + f.log.reason);
+  eq([f.fromSha, f.toSha], [f.srcSha, f.srcSha], 'the checked copy is kept, and so is the original');
+  await ctx.close();
+}, { core: true });
+
+test('removeFile: through the handle, by name when the handle cannot, any other refusal passed on; listAll and stillThere', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(async () => {
+    const fx = window.__fx, c = window.filter.core, d = await fx.dir('R' + Math.random().toString(36).slice(2, 8)), out = {};
+    for (const n of ['a.jpg', 'b.jpg', 'c.jpg', 'd.jpg']) await fx.put(d, n, fx.noise(100, 3));
+    out.all = [...(await c.listAll(d, { batch: 1, stallMs: 2000 })).names.keys()].sort();
+    out.handle = await c.removeFile(await d.getFileHandle('a.jpg'), d, 'a.jpg');
+    out.typeError = await c.removeFile({ remove() { throw new TypeError('no'); } }, d, 'b.jpg');
+    out.none = await c.removeFile({}, d, 'c.jpg');
+    try { await c.removeFile({ async remove() { throw new DOMException('busy', 'NoModificationAllowedError'); } }, d, 'd.jpg'); out.other = 'deleted'; }
+    catch (e) { out.other = e.name; }
+    const l = await c.listAll(d, { batch: 2, stallMs: 2000 });
+    out.left = [...l.names.keys()].sort();
+    out.stalled = l.stalled;
+    out.still = c.stillThere(['a.jpg', 'd.jpg', 'x.jpg'], l.names);
+    const stall = await c.listAll(fx.wrap(d, 'stallAfter0'), { batch: 2, stallMs: 50 });
+    out.stall = [stall.stalled, stall.names.size];
+    return out;
+  });
+  eq(r.all, ['a.jpg', 'b.jpg', 'c.jpg', 'd.jpg'], 'listAll reads batch after batch to the end');
+  eq([r.handle, r.typeError, r.none, r.other], ['handle', 'name', 'name', 'NoModificationAllowedError'], 'which way each went');
+  eq([r.left, r.stalled], [['d.jpg'], false], 'the listing reads every batch: only the refused one is left');
+  eq(r.still, ['d.jpg'], 'stillThere: only what the listing still has');
+  eq(r.stall, [true, 0], 'a stalled listing says so');
+  await ctx.close();
+}, { core: true });
+
+test('undo: which files a log covers, what each needs, and the newest log', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const c = window.filter.core;
+    const items = [{ name: 'a', to: 'people', ok: true, copyMade: true }, { name: 'b', to: 'pets', ok: false, copyMade: true },
+      { name: 'c', to: 'food', ok: false, skipped: true, copyMade: false }, { name: 'd', to: 'scenery', ok: true },
+      { name: 'e', to: 'filter-examples', ok: true, copyMade: true }, { name: 'f', to: 'Filter-Logs', ok: true, copyMade: true },
+      { name: 'g', to: '.hidden', ok: true, copyMade: true }, { name: 'h', to: 'a/b', ok: true, copyMade: true }, { name: 'i', to: 'blue sky', ok: true, copyMade: true },
+      { name: 'j', ok: true, copyMade: true }, { name: 'k', to: 'other', copyMade: true }];
+    return {
+      items: c.undoItems({ items }).map((x) => x.name), none: c.undoItems(null).length,
+      steps: [[true, false], [true, true], [false, true], [false, false]].map(([a, b]) => c.undoStep(a, b)),
+      newest: c.newestLog(['run-261031-101500.json', 'run-261031-101500-2.json', 'run-261030-235959-9.json', 'undo-261031-120000.json', 'run-261031-1015.json', 'notes.txt']),
+      plainLast: c.newestLog(['run-261031-101500-3.json', 'run-261031-101500.json', 'run-261031-101500-12.json']),
+      undo: c.newestLog(['run-261031-101500.json', 'undo-261031-120000.json', 'undo-261031-115959.json'], 'undo-'),
+      empty: c.newestLog(['notes.txt']),
+    };
+  });
+  eq(r.items, ['a', 'b', 'd', 'i'], 'every file copied, done or not (old logs: ok), never a skipped one, never one of filter\'s own folders, a hidden one or a path');
+  eq(r.none, 0, 'no log: nothing');
+  eq(r.steps, ['move back', 'drop copy', 'nothing', 'missing'], 'what each place needs');
+  eq([r.newest, r.plainLast, r.undo, r.empty], ['run-261031-101500-2.json', 'run-261031-101500-12.json', 'undo-261031-120000.json', null], 'the newest by time, then by its number');
+  await ctx.close();
+}, { core: true });
+
+test('dropCopy: a copy is deleted only when byte-identical to its original; one that differs is kept', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(async () => {
+    const fx = window.__fx, c = window.filter.core, d = await fx.dir('D' + Math.random().toString(36).slice(2, 8)), sub = await d.getDirectoryHandle('people', { create: true });
+    const bytes = fx.noise(5000, 4), flip = bytes.slice(); flip[2500] ^= 1;
+    const out = {};
+    const one = async (copyBytes, opts) => {
+      await fx.put(d, 'x.jpg', bytes); await fx.put(sub, 'x.jpg', copyBytes);
+      const L = await c.dropCopy(await sub.getFileHandle('x.jpg'), sub, 'x.jpg', await d.getFileHandle('x.jpg'), opts);
+      return { L, copy: await fx.has(sub, 'x.jpg'), orig: (await fx.has(d, 'x.jpg')) && await fx.shaOf(d, 'x.jpg') };
+    };
+    const steps = [];
+    out.same = await one(bytes, { onStep: (s) => steps.push(s) });
+    out.steps = steps;
+    out.flip = await one(flip);
+    out.short = await one(bytes.slice(0, 4999));
+    out.piece = await one(flip, { hashWhole: 100, hashPiece: 333 });
+    out.sha = await fx.sha(new Blob([bytes]));
+    out.gone = await c.dropCopy(await sub.getFileHandle('x.jpg'), sub, 'x.jpg', { kind: 'file', getFile() { throw new DOMException('gone', 'NotFoundError'); } });
+    return out;
+  });
+  eq([r.same.L.ok, r.same.L.removed, r.same.L.deletedBy, r.same.copy, r.same.orig], [true, true, 'handle', false, r.sha], 'identical: the copy removed, the original kept');
+  eq(r.steps, ['read both', 'delete copy', 'done'], 'steps');
+  for (const k of ['flip', 'short', 'piece']) {
+    eq([r[k].L.ok, r[k].L.removed, r[k].L.differs, r[k].copy, r[k].orig], [false, false, true, true, r.sha], k + ': both kept');
+  }
+  assert(/SHA-256/.test(r.flip.L.reason) && /size/.test(r.short.L.reason), 'reasons: ' + r.flip.L.reason + ' | ' + r.short.L.reason);
+  eq([r.gone.ok, r.gone.removed, r.gone.differs, r.gone.step], [false, false, false, 'read both'], 'an original that cannot be read: nothing deleted, reported');
+  await ctx.close();
+}, { core: true });
+
 /* ---------- App ---------- */
 
 test('start: clean darkroom page, one amber button, nothing to tap under 44 px', async () => {
@@ -1677,6 +1842,278 @@ test('start over needs two taps', async () => {
   await ctx.close();
 });
 
+/* ---------- App: move, Auto and undo (F4) ---------- */
+
+// Files in filter's subfolders (not the log), as path -> SHA-256.
+const sortedFiles = (tree) => Object.fromEntries(Object.entries(tree).filter(([k, v]) => k.includes('/') && v !== 'dir' && !k.startsWith('filter-logs/')));
+const logsOf = (tree, prefix) => filesIn(tree, 'filter-logs').filter((n) => n.startsWith(prefix));
+// An undo button needs two taps: the first only asks.
+async function undoTwice(page, sel) {
+  await page.click(sel);
+  eq(await text(page, sel), 'Sure? Tap again to undo', 'the first tap only asks');
+  await run(page, sel);
+}
+const MOVED = Object.entries(EXPECTED_PLAN).filter(([c]) => c !== 'other').flatMap(([c, ns]) => ns.map((n) => c + '/' + n)).sort();
+
+test('setup: Review first or Auto; Auto is not remembered, and a re-check turns it off', async () => {
+  const { ctx, page } = await newApp({ persistent: true });
+  await openCamera(page);
+  const look = () => page.evaluate(() => ({ review: document.querySelector('#run-review').getAttribute('aria-checked'), auto: document.querySelector('#run-auto').getAttribute('aria-checked'),
+    autoOff: document.querySelector('#run-auto').disabled, sort: document.querySelector('#btn-sort').textContent, cap: document.querySelector('#copies-cap').textContent }));
+  let s = await look();
+  eq([s.review, s.auto, s.sort], ['true', 'false', 'Sort'], 'Review first to start with');
+  eq(s.cap, 'Files go into subfolders here: people, pets, food, screenshots, documents, scenery, videos beside the photos. Files in "other" stay where they are. You check the plan first, then choose copy or move; a copy leaves every original where it is.', 'review caption');
+  await page.click('#run-auto');
+  s = await look();
+  eq([s.review, s.auto, s.sort], ['false', 'true', 'Sort and move'], 'Auto chosen');
+  eq(s.cap, 'Auto: each file is moved into subfolders here: people, pets, food, screenshots, documents, scenery, videos beside the photos straight away: copied, the copy checked byte for byte, and only then the original deleted. Files in "other" stay where they are. At the end you see what went where, and can undo the run.', 'auto caption');
+  await page.check('#recheck');
+  s = await look();
+  eq([s.review, s.auto, s.autoOff, s.sort, s.cap], ['true', 'false', true, 'Re-check', 'A re-check copies and moves nothing.'], 'a re-check never moves');
+  await page.uncheck('#recheck');
+  eq((await look()).sort, 'Sort and move', 'Auto comes back with the switch off');
+  await page.reload(); await ready(page);
+  eq([(await look()).auto, (await look()).sort], ['false', 'Sort'], 'not remembered: Review first after a restart');
+  eq((await rowsOf(page, '#setup-rows'))['Last run'], undefined, 'no run yet: no last run');
+  await ctx.close();
+});
+
+test('review: a move puts each file in its folder byte-identical and deletes the original; undo puts everything back', async () => {
+  const { ctx, page } = await newApp({ clipboard: true });
+  await openCamera(page);
+  const before = await camTree(page);
+  await sort(page);
+  const bar = () => page.evaluate(() => [document.querySelector('#btn-copy').textContent, document.querySelector('#do-copy').getAttribute('aria-checked'), document.querySelector('#review-cap').textContent]);
+  eq((await bar()).slice(0, 2), ['Copy 10', 'true'], 'copy is the default');
+  await page.click('#do-move');
+  eq(await bar(), ['Move 10', 'false', 'Tap a picture to send it to another folder; press and hold to pick several. Nothing is moved until you tap Move: each file is copied, the copy checked byte for byte, and only then the original deleted.'], 'move chosen');
+  eq(await text(page, '.group[data-category="other"] .note-stay'), 'stay here, not moved', 'other stays');
+  await run(page, '#btn-copy');
+  eq([await screen(page), await text(page, '#done-title')], ['done', 'Done'], 'done');
+  const after = await camTree(page);
+  for (const k of MOVED) eq(after[k], before[k.split('/')[1]], k + ' byte-identical to the original');
+  eq(Object.keys(sortedFiles(after)).sort(), MOVED, 'nothing else in the folders');
+  const left = Object.keys(onlyRoot(after)).sort();
+  eq(left, ['.trashed-1767225600-PXL_20261001_090000000.jpg', 'PXL_20261029_095000000.mp4', 'PXL_20261029_095100000.webm', 'PXL_20261029_100500000.jpg', 'notes.txt'], 'only "other" and what is not a photo stay');
+  for (const n of left) eq(after[n], before[n], n + ' untouched');
+  const runs = logsOf(after, 'run-');
+  eq(runs.length, 1, 'one run log');
+  const log = await readLog(page, runs[0]);
+  eq([log.mode, log.run, log.result], ['move', 'review', { moved: 10, skipped: 0, stayed: 3, stopped: null }], 'log header and result');
+  for (const it of log.items) {
+    eq([it.ok, it.moved, it.copyMade, it.deletedBy, it.gone, it.sha256, it.copySha256], [true, true, true, 'handle', true, before[it.name], before[it.name]], it.name + ' logged as moved, checked and gone');
+    assert(typeof it.ms.delete === 'number', it.name + ': delete time logged');
+  }
+  const d = await rowsOf(page, '#done-rows');
+  eq(d.Moved, '10 of 10, each copy read back and checked (size and SHA-256) before its original was deleted', 'moved row');
+  assert(/^[\d.]+ s per original, through its own handle$/.test(d.Deleting), 'deleting row: ' + d.Deleting);
+  assert(/^checked by 1 fresh listing of Camera, [\d.]+ s each$/.test(d.Gone), 'gone row: ' + d.Gone);
+  eq([d.Stayed, d['Already there'], d['You changed']], ['3 in other, not moved', '0', '0 of 13'], 'other rows');
+  eq(await page.evaluate(() => [...document.querySelectorAll('#done-groups .group')].map((g) => g.dataset.category + ' ' + g.querySelectorAll('.ph').length)),
+    ['people 3', 'pets 2', 'food 1', 'screenshots 2', 'documents 1', 'scenery 1', 'other 3'], 'what went where, as grids');
+  await page.click('#done-groups .group[data-category="pets"] .ph');
+  eq([await page.evaluate(() => document.querySelector('#sheet-targets').hidden), await text(page, '#sheet-cancel')], [true, 'Close'], 'a tap only shows why');
+  assert(/^moved to pets\. filter said pets: /.test(await text(page, '#sheet-why')), 'why: ' + await text(page, '#sheet-why'));
+  await page.click('#sheet-cancel');
+  // Undo puts everything back as it was.
+  await undoTwice(page, '#btn-undo');
+  eq(await text(page, '#done-title'), 'Undone', 'undone');
+  const undone = await camTree(page);
+  eq(onlyRoot(undone), onlyRoot(before), 'the camera folder exactly as before');
+  eq(sortedFiles(undone), {}, 'the folders are empty again');
+  const u = await rowsOf(page, '#done-rows');
+  eq([u['Moved back'].split(',')[0], u['Copies removed'].split(',')[0], u['Kept both'], u['Nothing to do'], u.Missing], ['10', '0', '0', '0', '0'], 'undo rows');
+  const ulog = await readLog(page, logsOf(undone, 'undo-')[0]);
+  eq([ulog.mode, ulog.undoes, ulog.result], ['undo', 'filter-logs/' + runs[0], { movedBack: 10, copiesRemoved: 0, kept: 0, nothing: 0, missing: 0, stopped: null }], 'undo log');
+  assert(ulog.items.every((x) => x.action === 'move back' && x.ok && x.gone === true && x.sha256 === before[x.name]), 'each moved back, checked, gone from its folder');
+  eq(await page.evaluate(() => document.querySelector('#btn-undo').hidden), true, 'no undo of an undo');
+  await page.click('#btn-details');
+  await page.waitForSelector('#notice:not([hidden])');
+  const lines = (await page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, '\n'))).split('\n');
+  assert(/^filter v[\d.]+ undo \d\d\/\d\d\/\d\d \d{4} hrs of filter-logs\/run-[\d-]+\.json, 10 files$/.test(lines[0]), 'undo details header: ' + lines[0]);
+  assert(lines.includes('PXL_20261029_100900000.jpg ▸ moved back from pets'), 'a line per file');
+  // The run it undid stays the last run, with nothing left to undo.
+  await run(page, '#btn-again');
+  assert(/, moved 10; nothing to undo$/.test((await rowsOf(page, '#setup-rows'))['Last run']), 'last run row: ' + (await rowsOf(page, '#setup-rows'))['Last run']);
+  eq(await page.evaluate(() => document.querySelector('#btn-undo-last').hidden), true, 'no undo button');
+  eq((await rowsOf(page, '#setup-rows'))['Not yet sorted'], '13', 'all 13 can be sorted again');
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
+test('auto: sorts and moves straight away, "other" stays, ends on what went where; undo after a restart from the folder screen', async () => {
+  const { ctx, page } = await newApp({ persistent: true });
+  await openCamera(page);
+  const before = await camTree(page);
+  await page.click('#run-auto');
+  await sort(page);
+  eq([await screen(page), await text(page, '#done-title')], ['done', 'Done'], 'straight to done: no review');
+  const after = await camTree(page);
+  eq(Object.keys(sortedFiles(after)).sort(), MOVED, 'each file moved into its folder');
+  for (const k of MOVED) eq(after[k], before[k.split('/')[1]], k + ' byte-identical');
+  const log = await readLog(page, logsOf(after, 'run-')[0]);
+  eq([log.mode, log.run, log.result.moved, log.result.stayed], ['move', 'auto', 10, 3], 'logged as an Auto move');
+  const d = await rowsOf(page, '#done-rows');
+  eq([d.Moved.split(',')[0], d['You changed']], ['10 of 10', undefined], 'nothing changed by hand in Auto');
+  eq(await page.evaluate(() => document.querySelectorAll('#done-groups .ph').length), 13, 'every file shown');
+  assert(/^filter v[\d.]+ auto run /.test(await text(page, '#details-text')), 'details say auto');
+  // After a restart, the folder screen offers to undo the last run.
+  await page.reload(); await ready(page);
+  eq(await screen(page), 'setup', 'reopened on the folder');
+  const r = await rowsOf(page, '#setup-rows');
+  assert(/^\d\d\/\d\d\/\d\d \d{4} hrs, moved 10 \(auto\); 10 to undo$/.test(r['Last run']), 'last run row: ' + r['Last run']);
+  eq(await page.evaluate(() => [document.querySelector('#btn-undo-last').hidden, document.querySelector('#btn-undo-last').textContent]), [false, 'Undo last run: 10 files'], 'undo offered');
+  await undoTwice(page, '#btn-undo-last');
+  eq(await text(page, '#done-title'), 'Undone', 'undone');
+  const undone = await camTree(page);
+  eq([onlyRoot(undone), sortedFiles(undone)], [onlyRoot(before), {}], 'everything back as it was');
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
+test('undo of a copy run removes only copies identical to their original; a changed copy is kept, gone ones reported', async () => {
+  const { ctx, page } = await newApp();
+  await openCamera(page);
+  const before = await camTree(page);
+  await sort(page);
+  await run(page, '#btn-copy');
+  // Since the run: a copy edited, a copy deleted, and a photo deleted from both places.
+  await page.evaluate(async () => {
+    const fx = window.__fx, cam = await fx.dir('DCIM/Camera');
+    await fx.put(await cam.getDirectoryHandle('pets'), 'PXL_20261029_100900000.jpg', fx.noise(2000, 3));
+    await (await cam.getDirectoryHandle('food')).removeEntry('PXL_20261029_100800000.jpg');
+    await (await cam.getDirectoryHandle('scenery')).removeEntry('PXL_20261029_100700000.jpg');
+    await cam.removeEntry('PXL_20261029_100700000.jpg');
+  });
+  await run(page, '#btn-again');
+  eq(await text(page, '#btn-undo-last'), 'Undo last run: 8 files', 'what is left in the folders');
+  await undoTwice(page, '#btn-undo-last');
+  const u = await rowsOf(page, '#done-rows');
+  eq([u['Moved back'].split(',')[0], u['Copies removed'], u['Kept both'], u['Nothing to do'], u.Missing],
+    ['0', '7, each byte-identical to its original', '1: the copy differs from the original, see the run details', '1', '1: in neither place, see the run details'], 'undo rows');
+  const after = await camTree(page);
+  eq(Object.keys(sortedFiles(after)), ['pets/PXL_20261029_100900000.jpg'], 'only the changed copy is left');
+  const root = onlyRoot(before); delete root['PXL_20261029_100700000.jpg'];
+  eq(onlyRoot(after), root, 'every original untouched');
+  const lines = (await text(page, '#details-text')).split('\n');
+  assert(lines.includes('PXL_20261029_100900000.jpg ▸ kept both: the copy differs from the original (size) (in pets)'), 'the changed copy: ' + lines.join(' | '));
+  assert(lines.includes('PXL_20261029_100800000.jpg ▸ nothing to do'), 'the deleted copy');
+  assert(lines.includes('PXL_20261029_100700000.jpg ▸ missing: in neither scenery nor the picked folder'), 'gone from both');
+  assert(lines.includes('PXL_20261029_101000000.jpg ▸ copy removed from people (identical to the original)'), 'an identical copy');
+  await run(page, '#btn-again');
+  eq(await text(page, '#btn-undo-last'), 'Undo last run: 1 file', 'the kept copy is still there to look at');
+  await ctx.close();
+});
+
+test('a bad copy in a move stops the run: its original stays, nothing after it moves, undo takes back the rest', async () => {
+  const { ctx, page } = await newApp();
+  await openCamera(page, { pets: 'flip' });
+  const before = await camTree(page);
+  await sort(page);
+  await page.click('#do-move');
+  await run(page, '#btn-copy');
+  eq(await text(page, '#done-title'), 'Stopped', 'stopped');
+  eq(await text(page, '#done-note'), 'Stopped at PXL_20261029_100900000.jpg (compare): SHA-256 differs. The original is untouched. The faulty copy is in the folder beside it; nothing was deleted.', 'note');
+  const after = await camTree(page);
+  eq(Object.keys(sortedFiles(after)).sort(), ['people/PXL_20261029_101000000.jpg', 'pets/PXL_20261029_100900000.jpg'], 'the first moved, the faulty copy made');
+  eq(after['PXL_20261029_101000000.jpg'], undefined, 'the first original is gone');
+  eq(after['PXL_20261029_100900000.jpg'], before['PXL_20261029_100900000.jpg'], 'the original of the bad copy is untouched');
+  for (const n of Object.keys(onlyRoot(before)).filter((k) => k !== 'PXL_20261029_101000000.jpg')) eq(after[n], before[n], n + ' untouched');
+  eq(await page.evaluate(() => [...document.querySelectorAll('#done-groups .group')].map((g) => g.dataset.category + ' ' + g.querySelectorAll('.ph').length)),
+    ['people 1', 'other 3', '(not done) 9'], 'what was done, and what was not');
+  await undoTwice(page, '#btn-undo');
+  const u = await rowsOf(page, '#done-rows');
+  eq([u['Moved back'].split(',')[0], u['Kept both'].split(':')[0]], ['1', '1'], 'one back, the faulty copy kept to look at');
+  const undone = await camTree(page);
+  eq(onlyRoot(undone), onlyRoot(before), 'the camera folder as before');
+  eq(Object.keys(sortedFiles(undone)), ['pets/PXL_20261029_100900000.jpg'], 'the faulty copy stays beside its original');
+  await ctx.close();
+});
+
+test('an original still listed after its delete stops the move at the next check; nothing is lost', async () => {
+  const { ctx, page } = await newApp();
+  await page.evaluate(() => { window.filter.config.goneEvery = 2; });
+  await openCamera(page, null, 'keepOriginals');
+  const before = await camTree(page);
+  await sort(page);
+  await page.click('#do-move');
+  await run(page, '#btn-copy');
+  eq(await text(page, '#done-title'), 'Stopped', 'stopped');
+  eq(await text(page, '#done-note'), 'Stopped: PXL_20261029_101000000.jpg is still listed after its delete. Its copy was checked byte for byte first, so nothing is lost; both are kept.', 'note');
+  const after = await camTree(page);
+  eq(onlyRoot(after), onlyRoot(before), 'every original still there');
+  eq(Object.keys(sortedFiles(after)).sort(), ['people/PXL_20261029_101000000.jpg', 'pets/PXL_20261029_100900000.jpg'], 'two moves, then the check stopped it');
+  const log = await readLog(page, logsOf(after, 'run-')[0]);
+  eq(log.items.map((x) => x.gone), [false, false], 'the log says neither is gone');
+  assert(/still listed after its delete/.test(log.result.stopped), 'log result: ' + log.result.stopped);
+  await ctx.close();
+});
+
+test('a move is not started when its log cannot be written', async () => {
+  const { ctx, page } = await newApp();
+  await openCamera(page);
+  await page.evaluate(async () => { await window.__fx.put(await window.__fx.dir('DCIM/Camera'), 'filter-logs', new Uint8Array(3)); });   // a file in the way of the folder
+  const before = await camTree(page);
+  await sort(page);
+  await page.click('#do-move');
+  await run(page, '#btn-copy');
+  eq(await text(page, '#done-title'), 'Stopped', 'stopped');
+  assert(/^Stopped at \(the log\) \(writing the log\): TypeMismatchError: .*; nothing was moved\. The original is untouched\.$/.test(await text(page, '#done-note')), 'note: ' + await text(page, '#done-note'));
+  eq(await camTree(page), before, 'nothing moved, nothing made');
+  eq(await page.evaluate(() => document.querySelector('#btn-undo').hidden), true, 'nothing to undo');
+  await ctx.close();
+});
+
+test('stop during a move: the rest stay where they are, the log is saved as the run goes, undo takes back what was done', async () => {
+  const { ctx, page } = await newApp();
+  await page.evaluate(() => { window.filter.config.logEvery = 1; });
+  await openCamera(page);
+  const before = await camTree(page);
+  await sort(page);
+  // Before each move, what the log on the phone already holds; after the third, Stop.
+  await page.evaluate(() => {
+    const core = window.filter.core, move = core.safeMove;
+    window.__logSeen = [];
+    core.safeMove = async (...a) => {
+      const dir = await (await window.__fx.dir('DCIM/Camera')).getDirectoryHandle('filter-logs');
+      for await (const h of dir.values()) window.__logSeen.push(JSON.parse(await (await h.getFile()).text()).items.length);
+      const r = await move(...a);
+      if (window.__logSeen.length === 3) document.querySelector('#btn-stop-copy').click();
+      return r;
+    };
+  });
+  await page.click('#do-move');
+  await run(page, '#btn-copy');
+  eq(await page.evaluate(() => window.__logSeen), [0, 1, 2], 'the log is on the phone before the first move, and grows with each');
+  eq([await text(page, '#done-title'), await text(page, '#done-note')], ['Stopped by you', 'Stopped after 3 files. The rest are where they were.'], 'stopped by Gary');
+  const after = await camTree(page);
+  eq(Object.keys(sortedFiles(after)).length, 3, 'three moved');
+  const log = await readLog(page, logsOf(after, 'run-')[0]);
+  eq([log.items.length, log.result.moved, log.result.stopped], [3, 3, 'stopped by you'], 'the log has what was done');
+  assert(log.items.every((x) => x.gone === true), 'the three checked gone at the end');
+  await undoTwice(page, '#btn-undo');
+  eq(onlyRoot(await camTree(page)), onlyRoot(before), 'back as before');
+  await ctx.close();
+});
+
+test('auto stopped during recognition shows the plan instead, nothing moved', async () => {
+  const { ctx, page } = await newApp();
+  await page.evaluate(() => { window.filter.config.prefetch = 1; });
+  await openCamera(page);
+  const before = await camTree(page);
+  await page.evaluate(() => {
+    const seen = new Set();
+    window.filter.recog.override = (e) => { seen.add(e.name); if (seen.size === 3) window.filter.state.stopRequested = true; return window.__answers[e.name] || {}; };
+  });
+  await page.click('#run-auto');
+  await sort(page);
+  eq(await screen(page), 'review', 'the plan, not the done screen');
+  eq(await page.evaluate(() => [document.querySelector('#btn-copy').textContent, document.querySelector('#do-move').getAttribute('aria-checked')]), ['Move 3', 'true'], 'move still chosen');
+  assert((await text(page, '#review-cap')).startsWith('Auto stopped before moving anything. '), 'says so');
+  eq(await camTree(page), before, 'nothing moved');
+  await ctx.close();
+});
+
 /* ---------- App: by example (F2) ---------- */
 
 // Seed the camera folder with Gary's example folders and pick it. The stand-in
@@ -1730,7 +2167,7 @@ test('setup: example folders are read from filter-examples, odd ones listed as n
   eq([s.desc, s.ex], ['false', 'true'], 'by example chosen');
   eq(await page.evaluate(() => document.querySelector('#newest').value), '4', 'the number typed is kept when the mode changes');
   eq(s.by, 'Each photo is compared with your example photos in filter-examples/, each video with your example videos, and goes to the closest folder, or stays as unsure. Videos are left out: no example folder has videos.', 'caption');
-  eq(s.copies, 'Copies go into subfolders here named like your example folders: blue sky, green, red. Unsure files stay where they are. Nothing is moved or deleted.', 'where copies go');
+  eq(s.copies, 'Files go into subfolders here named like your example folders: blue sky, green, red. Unsure files stay where they are. You check the plan first, then choose copy or move; a copy leaves every original where it is.', 'where files go');
   eq(await page.evaluate(() => window.filter.state.examples.map((f) => [f.name, f.files.map((x) => x.name)])),
     [['blue sky', ['bluesky_1.jpg', 'bluesky_2.jpg', 'bluesky_3.jpg']], ['green', ['green_1.jpg', 'green_2.jpg']],
       ['red', ['PXL_20261030_100100000.jpg', 'red_1.jpg', 'red_2.jpg', 'red_3.jpg']]], 'example files, in name order');

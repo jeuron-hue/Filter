@@ -3,23 +3,28 @@
 filter: sorts the photos and videos on Gary's phone into folders by what is in
 them. Installed as a PWA. Everything runs on the phone; nothing is uploaded.
 
-This build is phase F3: photos and videos, Review mode, copy only, in two
-recognition modes picked per run. By description (F1): the fixed list. By example
-(F2): Gary makes folders in filter-examples/ inside the picked folder, each with a
-few example photos and example videos (3 of each is best); filter compares every
-photo with every example photo, and every video with every example video, and
-proposes the closest folder, or "unsure" when nothing is close enough or two
-folders are too close to call. Pick a folder (DCIM/Camera), choose how many of the
-newest photos and videos to sort (one count, both kinds together by date), filter
-shows its plan as a grid per folder, Gary moves any picture to another folder, then
-one tap copies them. Copies go into subfolders of the picked folder (people, pets,
-food, screenshots, documents, scenery, or the names of Gary's example folders),
-videos beside the photos; files in "other" or "unsure" stay where they are and are
-not copied. Every copy is read back and checked byte for byte (size and SHA-256).
-filter never deletes or overwrites anything, and never writes to filter-examples/.
-Each run writes a log to filter-logs/ in the picked folder.
+This build is phase F4: photos and videos, recognised in two modes picked per
+run, sorted in two run modes picked per run, copied or moved, with undo.
+By description (F1): the fixed list. By example (F2): Gary makes folders in
+filter-examples/ inside the picked folder, each with a few example photos and
+example videos (3 of each is best); filter compares every photo with every
+example photo, and every video with every example video, and proposes the
+closest folder, or "unsure" when nothing is close enough or two folders are too
+close to call. Pick a folder (DCIM/Camera), choose how many of the newest photos
+and videos to sort (one count, both kinds together by date). Review first: filter
+shows its plan as a grid per folder, Gary moves any picture to another folder,
+then chooses copy (the default) or move and confirms with one tap. Auto: filter
+moves each file straight away and shows what went where afterwards. Files go into
+subfolders of the picked folder (people, pets, food, screenshots, documents,
+scenery, or the names of Gary's example folders), videos beside the photos;
+files in "other" or "unsure" stay where they are. Every copy is read back and
+checked byte for byte (size and SHA-256); a move deletes the original only after
+that, and checks it is gone with one fresh listing per batch. filter never
+overwrites anything, and never writes to filter-examples/. Each run writes a log
+to filter-logs/ in the picked folder, saved as the run goes; Undo takes the last
+run back the same safe way.
 
-APP_VERSION 0.3.4 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.4.0 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -92,15 +97,17 @@ How the file is laid out:
      another origin (connect-src 'self'), so photos cannot leave the phone.
   2. CSS: darkroom tokens (the same as retouch), then the screens.
   3. HTML: a status strip, one section per screen (start, setup, run, review,
-     copy, done), the bottom bar, and the sheet for sending one picture, or several picked, elsewhere.
+     copy, done; an undo uses the copy and done screens), the bottom bar, and the
+     sheet for sending one picture, or several picked, elsewhere.
   4. Script:
      a. Settings and the recognition rules.
      b. CORE: pure functions: reading a folder in batches, choosing the newest
         files, reading a photo's header (size, camera, orientation, preview),
         the sorting rules, the frames of a video and their vote, the SHA-256,
-        and the safe copy. Tests and the mutation runner
-        target this block.
-     c. App: models, the screens, the run, the copy, the log, service worker.
+        the safe copy and the safe move, the one place files are deleted, and
+        undo's rules. Tests and the mutation runner target this block.
+     c. App: models, the screens, the run, the copy or move, the log, undo,
+        service worker.
 -->
 <html lang="en">
 <head>
@@ -291,12 +298,17 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
         <label for="newest">Newest photos and videos to sort</label>
         <input type="number" id="newest" min="1" max="2000" step="1" value="200" inputmode="numeric">
       </div>
-      <label class="check"><input type="checkbox" id="recheck"><span>Re-check files already sorted. Nothing is copied: for comparing what filter says now.</span></label>
+      <div class="seg" role="radiogroup" aria-label="Run">
+        <button type="button" role="radio" id="run-review" data-run="review" aria-checked="true">Review first</button>
+        <button type="button" role="radio" id="run-auto" data-run="auto" aria-checked="false">Auto</button>
+      </div>
+      <label class="check"><input type="checkbox" id="recheck"><span>Re-check files already sorted. Nothing is copied or moved: for comparing what filter says now.</span></label>
       <p class="cap" id="copies-cap"></p>
       <p class="note" id="setup-note"></p>
     </div>
     <div class="actions-col" style="align-self:center">
       <button class="btn btn-primary btn-big" id="btn-sort" disabled>Sort</button>
+      <button class="btn" id="btn-undo-last" hidden>Undo last run</button>
       <button class="btn" id="btn-change">Pick another folder</button>
     </div>
   </section>
@@ -313,6 +325,10 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
 
   <!-- Review: the plan, a grid per proposed folder. -->
   <section class="screen" data-screen="review">
+    <div class="seg" role="radiogroup" aria-label="Copy or move" id="review-do">
+      <button type="button" role="radio" id="do-copy" aria-checked="true">Copy</button>
+      <button type="button" role="radio" id="do-move" aria-checked="false">Move</button>
+    </div>
     <p class="cap" id="review-cap">Tap a picture to send it to another folder; press and hold to pick several. Nothing is copied until you tap Copy.</p>
     <div id="groups" style="display:flex;flex-direction:column;gap:18px"></div>
     <button class="btn" id="btn-review-details" style="align-self:center">Copy run details</button>
@@ -325,6 +341,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
     <div class="bar-track"><div class="bar-fill" id="copy-fill"></div></div>
     <p class="cap" id="copy-cap" style="text-align:center"></p>
     <p class="cap awake-cap">The screen stays on while filter works. If you leave filter, it waits and carries on when you come back.</p>
+    <button class="btn" id="btn-stop-copy" style="align-self:center">Stop after this file</button>
   </section>
 
   <!-- Done: what was done. -->
@@ -336,8 +353,10 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
     </div>
     <div class="actions-col" style="align-self:center">
       <button class="btn btn-primary btn-big" id="btn-again">Back to the folder</button>
+      <button class="btn" id="btn-undo" hidden>Undo this run</button>
       <button class="btn" id="btn-details">Copy run details</button>
     </div>
+    <div id="done-groups" style="display:flex;flex-direction:column;gap:18px"></div>
     <details class="card" id="done-details"><summary class="cap">Run details: each file, its folder and why</summary><pre id="details-text"></pre></details>
   </section>
 </main>
@@ -376,7 +395,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.3.4';
+const APP_VERSION = '0.4.0';
 
 // The folders filter knows, in the order they are shown. Photos and videos in
 // "other" stay where they are: nothing is copied for them.
@@ -413,6 +432,8 @@ const config = {
   frameSlack: 0.25,     // ... a frame shown this close in time (seconds) counts as it
   holdMs: 500,          // review: a press this long on a picture starts picking several
   videoTries: 3,        // a video read while filter left the screen is read again, up to this many times in all
+  logEvery: 10,         // the run log is saved after this many files, so a run cut off still has its log
+  goneEvery: 50,        // a move checks its originals are gone after this many, by one fresh listing
 };
 
 // The rules that turn what the models see into a folder. Each threshold is named
@@ -1012,20 +1033,28 @@ core.mapAhead = async (items, depth, load, each) => {
   }
 };
 
-// The safe copy. F1 to F3 copy only: the original is never changed or deleted.
+// The safe copy and the safe move (F4), one function so the order of the steps
+// is the same for both:
 //   1. read the original (through its handle from the listing: no slow lookup
-//      by name in a big folder) and note its size and SHA-256
+//      by name in a big folder) and note its size, time and SHA-256
 //   2. refuse if the target folder already has that name (never overwrite):
 //      checked against the names listed at the start, then in the folder itself
 //   3. write the copy
 //   4. read the copy back and take its size and SHA-256
 //   5. any difference is a failure: the run stops and both files are kept
+// A copy ends there. A move (opts.from: the original's folder) goes on:
+//   6. read the original again: if its size or time changed since it was hashed
+//      (another app wrote to it), stop and keep both
+//   7. delete the original, through its own handle (core.removeFile)
+// Whether the originals are gone is checked for many at once, by one fresh
+// listing of their folder (core.stillThere): a lookup by name costs seconds in
+// a big folder (F0: 4.2 s in DCIM/Camera).
 // Never throws: the returned log says how far it got and why it stopped.
 // opts.existing: the target folder's names; opts.onStep(step) hears each step;
 // opts.hashWhole and opts.hashPiece: how big files are hashed (core.sha256).
-core.safeCopy = async (src, name, toDir, opts = {}) => {
+core.transfer = async (src, name, toDir, opts = {}) => {
   const now = opts.now || (() => performance.now());
-  const log = { name, ok: false, skipped: false, step: '', copyMade: false, ms: {} };
+  const log = { name, ok: false, skipped: false, step: '', copyMade: false, moved: false, ms: {} };
   const at = (s) => { log.step = s; if (opts.onStep) opts.onStep(s); };
   let t = now();
   const lap = (k) => { const n = now(); log.ms[k] = n - t; t = n; };
@@ -1033,6 +1062,7 @@ core.safeCopy = async (src, name, toDir, opts = {}) => {
     at('read original');
     const orig = await src.getFile();
     log.size = orig.size;
+    log.modified = orig.lastModified;
     log.sha256 = await core.sha256(orig, opts.hashWhole, opts.hashPiece);
     lap('hash');
     at('check target');
@@ -1061,12 +1091,113 @@ core.safeCopy = async (src, name, toDir, opts = {}) => {
     at('compare');
     if (copy.size !== orig.size) { log.reason = 'size differs: copy ' + copy.size + ' B, original ' + orig.size + ' B'; return log; }
     if (log.copySha256 !== log.sha256) { log.reason = 'SHA-256 differs'; return log; }
+    if (opts.from) {
+      at('check original');
+      const again = await src.getFile();
+      if (again.size !== log.size || again.lastModified !== log.modified) { log.reason = 'the original changed during the copy'; return log; }
+      at('delete original');
+      log.deletedBy = await core.removeFile(src, opts.from, name);
+      log.moved = true;
+      lap('delete');
+    }
     at('done');
     log.ok = true;
   } catch (e) {
     log.reason = (e && e.name ? e.name + ': ' : '') + ((e && e.message) || String(e));
   }
   return log;
+};
+// F1 to F3 copy only; the original is never changed or deleted.
+core.safeCopy = (src, name, toDir, opts = {}) => core.transfer(src, name, toDir, { ...opts, from: null });
+// F4: the copy above, checked, then the original deleted from fromDir.
+core.safeMove = (src, name, fromDir, toDir, opts = {}) => core.transfer(src, name, toDir, { ...opts, from: fromDir });
+
+// Every file is deleted here and nowhere else. Through the file's own handle
+// (Chrome's handle.remove()), which should need no lookup by name in a big
+// folder; a browser without it deletes by name in the folder instead. Says which
+// way it went ('handle' or 'name') for the run log, so the phone's times show
+// whether the handle is quicker (F0: 4.1 s to delete by name in DCIM/Camera).
+core.removeFile = async (h, dir, name) => {
+  if (typeof h.remove === 'function') {
+    try { await h.remove(); return 'handle'; }
+    catch (e) { if (!(e instanceof TypeError || (e && e.name === 'NotSupportedError'))) throw e; }
+  }
+  await dir.removeEntry(name);
+  return 'name';
+};
+
+// Every entry of a folder, read in batches as at the start: a Map from name to
+// handle, and whether the listing stalled (then the Map may be short).
+core.listAll = async (dir, { batch, stallMs }) => {
+  const names = new Map(), it = dir.values();
+  for (;;) {
+    const b = await core.readBatch(it, { limit: batch, stallMs });
+    for (const e of b.entries) names.set(e.name, e.handle);
+    if (b.stalled) return { names, stalled: true };
+    if (b.done) return { names, stalled: false };
+  }
+};
+
+// The names deleted that a fresh listing still shows: originals that are not gone.
+core.stillThere = (deleted, listed) => deleted.filter((n) => listed.has(n));
+
+// Undo (F4). The files a run's log says it put in a folder: every one it made a
+// copy of, done or not (a move that stopped after its copy left both). A file it
+// skipped as already there belongs to an earlier run and is left alone. Logs
+// before F4 have no copyMade; there a copy that checked is "ok".
+// Only a folder filter could have made is touched: one plain name, not hidden and
+// not one of filter's own (so never filter-examples/), whatever a log says.
+core.undoItems = (log) => ((log && log.items) || []).filter((it) => (it.copyMade || it.ok) &&
+  typeof it.to === 'string' && it.to && !/[/\\]/.test(it.to) && !core.exampleProblem(it.to));
+
+// What undoing one file needs, from where it is now. inSub: in the folder the
+// run put it in; atRoot: a file of that name is in the picked folder.
+//   in the folder only   'move back'  (the safe move, back to the picked folder)
+//   in both              'drop copy'  (the copy deleted, only if byte-identical: core.dropCopy)
+//   picked folder only   'nothing'    (never copied there, or already undone)
+//   in neither           'missing'    (moved or deleted since; reported)
+// Undo can be run again after a stop: each file's state says what is left.
+core.undoStep = (inSub, atRoot) => (inSub ? (atRoot ? 'drop copy' : 'move back') : (atRoot ? 'nothing' : 'missing'));
+
+// Undo of a copy: the copy is deleted only if it is byte-identical (size and
+// SHA-256) to the original beside it, so nothing is lost. A copy that differs
+// (a faulty copy, or one edited since) is kept beside the original and reported
+// (differs: true). Never throws.
+core.dropCopy = async (copyH, copyDir, name, origH, opts = {}) => {
+  const log = { name, ok: false, step: '', removed: false, differs: false };
+  const say = (s) => { log.step = s; if (opts.onStep) opts.onStep(s); };
+  try {
+    say('read both');
+    const c = await copyH.getFile(), o = await origH.getFile();
+    log.size = o.size; log.copySize = c.size;
+    if (c.size !== o.size) { log.differs = true; log.reason = 'the copy differs from the original (size): both kept'; return log; }
+    log.sha256 = await core.sha256(o, opts.hashWhole, opts.hashPiece);
+    log.copySha256 = await core.sha256(c, opts.hashWhole, opts.hashPiece);
+    if (log.copySha256 !== log.sha256) { log.differs = true; log.reason = 'the copy differs from the original (SHA-256): both kept'; return log; }
+    say('delete copy');
+    log.deletedBy = await core.removeFile(copyH, copyDir, name);
+    log.removed = true;
+    say('done');
+    log.ok = true;
+  } catch (e) {
+    log.reason = (e && e.name ? e.name + ': ' : '') + ((e && e.message) || String(e));
+  }
+  return log;
+};
+
+// The newest log of a kind among filter-logs' names: run-YYMMDD-HHMMSS.json, with
+// -2, -3 ... when two started in the same second (a plain name sorts after its
+// own -2, so the number is read, not the text compared). null if there is none.
+core.newestLog = (names, prefix = 'run-') => {
+  const re = new RegExp('^' + prefix + '(\\d{6}-\\d{6})(?:-(\\d+))?\\.json$');
+  let best = null, key = null;
+  for (const n of names) {
+    const m = re.exec(n);
+    if (!m) continue;
+    const k = [m[1], m[2] ? +m[2] : 1];
+    if (!key || k[0] > key[0] || (k[0] === key[0] && k[1] > key[1])) { best = n; key = k; }
+  }
+  return best;
 };
 // CORE:END
 
@@ -1130,6 +1261,14 @@ const state = {
   picked: null,       // review: while picking several, the Set of their places in the plan; null otherwise
   wasIn: new Map(),   // name -> the folder it was already in when the run started
   lastRun: null,
+  auto: false,        // the run mode chosen: Review first (false) or Auto (true). Not remembered:
+                      // Auto moves files, so each time filter opens it starts on Review first.
+  runAuto: false,     // the run on screen is an Auto run
+  autoStopped: false, // ... stopped during recognition: it shows the plan instead, nothing moved
+  doMove: false,      // review: move instead of copy. Copy is the default on every run.
+  lastLog: null,      // the newest run log in filter-logs/: { file, log, pending } or { file, error }
+  doneLog: null,      // the log file of the run just done, for Undo this run
+  undoDetails: null,  // after an undo, its run details (each file and what was done)
 };
 
 function show(screen) {
@@ -1325,6 +1464,8 @@ async function openFolder(h) {
     for await (const x of d.values()) if (x.kind === 'file') { state.sorted[c].add(x.name); state.sortedAll.add(x.name); }
   }
   state.files = files;
+  state.undoDetails = null;
+  await readLastRun(subfolders);
   const fresh = files.filter((p) => !state.sortedAll.has(p.name)).length;
   rows($('#setup-rows'), [
     ['Entries', entries + ' in ' + fmtS(now() - t0) + (stalled ? ', stopped: the folder stalled' : ''), stalled ? 'watch' : undefined],
@@ -1333,8 +1474,48 @@ async function openFolder(h) {
     ['Already sorted', String(files.length - fresh)],
     ['Not yet sorted', String(fresh)],
     ['Examples', examplesText(), state.exampleNotes.length || state.examples.some(fewExamples) ? 'watch' : undefined],
-  ]);
+  ].concat(state.lastLog ? [['Last run', lastRunText(state.lastLog), state.lastLog.error ? 'watch' : undefined]] : []));
+  const u = $('#btn-undo-last');
+  u.hidden = !(state.lastLog && state.lastLog.pending);
+  u.dataset.label = u.textContent = state.lastLog && state.lastLog.pending ? 'Undo last run: ' + plural(state.lastLog.pending, 'file') : 'Undo last run';
   setupChoice();
+}
+
+// The newest run log, and how many of its files are still in the folders it put
+// them in: what Undo last run would take back. Those folders are small, so
+// listing them is quick. An undo writes undo-...json, which is not a run: the
+// run it undid stays the last run, with nothing (or what is left) to undo.
+async function readLastRun(subfolders) {
+  state.lastLog = null;
+  const dir = subfolders.get(LOG_FOLDER);
+  if (!dir) return;
+  const names = [];
+  for await (const x of dir.values()) if (x.kind === 'file') names.push(x.name);
+  const file = core.newestLog(names);
+  if (!file) return;
+  try {
+    const log = JSON.parse(await (await (await dir.getFileHandle(file)).getFile()).text());
+    const listed = {};
+    let pending = 0;
+    for (const it of core.undoItems(log)) {
+      if (!listed[it.to]) {
+        listed[it.to] = new Set();
+        const d = subfolders.get(it.to);
+        if (d) for await (const x of d.values()) if (x.kind === 'file') listed[it.to].add(x.name);
+      }
+      if (listed[it.to].has(it.name)) pending++;
+    }
+    state.lastLog = { file, log, pending };
+  } catch (e) { state.lastLog = { file, error: errText(e) }; }
+}
+
+// "31/10/26 1015 hrs, moved 12 (auto); 12 to undo".
+function lastRunText(L) {
+  if (L.error) return LOG_FOLDER + '/' + L.file + ' could not be read: ' + L.error;
+  const g = L.log, r = g.result || {}, t = Date.parse(g.started);
+  const did = g.mode === 'move' ? 'moved ' + (r.moved || 0) : 'copied ' + (r.copied || 0);
+  return (t ? fmtDate(t) + ' ' + fmtTime(t) + ', ' : '') + did + (g.run === 'auto' ? ' (auto)' : '') + (r.stopped || !g.finished ? ', stopped' : '') +
+    '; ' + (L.pending ? L.pending + ' to undo' : 'nothing to undo');
 }
 
 // Gary's example folders: each subfolder of filter-examples/ with at least one
@@ -1399,7 +1580,10 @@ const runnable = () => { const kinds = runKinds(); return state.files.filter((f)
 // The sort button and the count follow the re-check switch: a re-check takes the
 // newest files whether sorted or not.
 function setupChoice() {
-  const ex = byExample(), kinds = runKinds();
+  const ex = byExample(), kinds = runKinds(), recheck = $('#recheck').checked, auto = state.auto && !recheck;
+  $('#run-review').setAttribute('aria-checked', String(!auto));
+  $('#run-auto').setAttribute('aria-checked', String(auto));
+  $('#run-auto').disabled = recheck;
   $('#by-description').setAttribute('aria-checked', String(!ex));
   $('#by-example').setAttribute('aria-checked', String(ex));
   $('#by-example').disabled = !state.examples.length;
@@ -1407,17 +1591,19 @@ function setupChoice() {
     ? 'Each photo is compared with your example photos in ' + EXAMPLES + '/, each video with your example videos, and goes to the closest folder, or stays as unsure.' +
       (kinds.includes('video') ? '' : ' Videos are left out: no example folder has videos.') + (kinds.includes('photo') ? '' : ' Photos are left out: no example folder has photos.')
     : 'Each photo goes to the folder filter knows that fits what is in it; each video by three of its frames.' + (state.examples.length ? '' : ' By example needs a ' + EXAMPLES + '/ folder here.');
-  $('#copies-cap').textContent = ex
-    ? 'Copies go into subfolders here named like your example folders: ' + state.examples.map((f) => f.name).join(', ') + '. Unsure files stay where they are. Nothing is moved or deleted.'
-    : 'Copies go into subfolders here: people, pets, food, screenshots, documents, scenery, videos beside the photos. Files in "other" stay where they are. Nothing is moved or deleted.';
-  const recheck = $('#recheck').checked;
+  const where = ex ? 'subfolders here named like your example folders: ' + state.examples.map((f) => f.name).join(', ')
+    : 'subfolders here: people, pets, food, screenshots, documents, scenery, videos beside the photos';
+  const stay = ex ? 'Unsure files' : 'Files in "other"';
+  $('#copies-cap').textContent = recheck ? 'A re-check copies and moves nothing.'
+    : auto ? 'Auto: each file is moved into ' + where + ' straight away: copied, the copy checked byte for byte, and only then the original deleted. ' + stay + ' stay where they are. At the end you see what went where, and can undo the run.'
+    : 'Files go into ' + where + '. ' + stay + ' stay where they are. You check the plan first, then choose copy or move; a copy leaves every original where it is.';
   const list = runnable();
   const can = recheck ? list.length : list.filter((f) => !state.sortedAll.has(f.name)).length;
   // The number Gary typed is kept when the switches change (he asked, 30/10/26); it
   // is only shown smaller while fewer files than that are there to take.
   $('#newest').value = Math.min(state.newestTyped || config.newest, Math.max(1, can));
   $('#btn-sort').disabled = can === 0;
-  $('#btn-sort').textContent = recheck ? 'Re-check' : 'Sort';
+  $('#btn-sort').textContent = recheck ? 'Re-check' : auto ? 'Sort and move' : 'Sort';
   $('#setup-note').textContent = can ? '' : list.length ? 'Everything here is already sorted. Re-check it with the switch above.'
     : state.files.length ? 'Nothing here to sort by example: see above.' : 'No photos or videos in this folder.';
 }
@@ -1688,6 +1874,9 @@ function clearPlan() {
 async function runSort() {
   const n = Math.min(config.maxNewest, Math.max(1, Math.round(+$('#newest').value) || config.newest));
   state.recheck = $('#recheck').checked;
+  state.runAuto = state.auto && !state.recheck;
+  state.doMove = state.runAuto;       // Auto always moves; Review starts on copy
+  state.undoDetails = null;
   state.runBy = byExample() ? 'example' : 'description';
   const ex = state.runBy === 'example';
   state.cats = ex ? state.examples.map((f) => f.name).concat(UNSURE) : CATEGORIES;
@@ -1761,7 +1950,11 @@ async function runSort() {
     perPhotoMs: stats.photo.n ? stats.photo.ms / stats.photo.n : 0, perVideoMs: stats.video.n ? stats.video.ms / stats.video.n : 0,
     closer: stats.closer, looks: stats.looks, failed: stats.failed,
   };
+  state.autoStopped = state.runAuto && state.stopRequested;
   renderReview();
+  // Auto moves straight away. Stopped during recognition, it shows the plan
+  // instead, with nothing moved, for Gary to copy or move himself.
+  if (state.runAuto && !state.autoStopped && toCopy().length) { await runTransfer(); return; }
   show('review');
 }
 
@@ -1842,56 +2035,77 @@ function countText(items) {
 }
 const fmtDur = (s) => Math.floor(s / 60) + ':' + pad2(Math.floor(s % 60));
 
-function renderReview() {
-  const box = $('#groups');
+// The grids, one per folder. On the review, the plan, with tap and press and hold
+// to change it. On the done screen (done: true), what was done, to look at only:
+// each file under the folder it went to, those that stayed, and, after a stop,
+// those not copied or moved, last.
+const NOT_DONE = '(not done)';
+function groupOf(p, done) {
+  if (!done || p.category === state.stay) return p.category;
+  return ['copied', 'moved', 'already there'].includes(p.outcome) ? p.category : NOT_DONE;
+}
+function renderGroups(box, done) {
   box.replaceChildren();
-  for (const c of state.cats) {
-    let items = state.plan.map((p, i) => ({ p, i, score: p.score })).filter((x) => x.p.category === c);
+  for (const c of done ? state.cats.concat(NOT_DONE) : state.cats) {
+    let items = state.plan.map((p, i) => ({ p, i, score: p.score })).filter((x) => groupOf(x.p, done) === c);
     if (!items.length) continue;
     if (state.runBy === 'example') items = core.leastSureFirst(items);
     const g = document.createElement('section'); g.className = 'group'; g.dataset.category = c;
     const head = document.createElement('div'); head.className = 'group-head';
-    const t = document.createElement('span'); t.className = 'edge'; t.textContent = c + ' ▸ ' + items.length;
+    const t = document.createElement('span'); t.className = 'edge'; t.textContent = (c === NOT_DONE ? 'not done' : c) + ' ▸ ' + items.length;
     head.append(t);
-    if (c === state.stay) { const s = document.createElement('span'); s.className = 'edge note-stay'; s.textContent = 'stay here, not copied'; head.append(s); }
+    const note = c === NOT_DONE ? 'still where it was' : c !== state.stay ? '' : done ? 'stayed here' : state.doMove ? 'stay here, not moved' : 'stay here, not copied';
+    if (note) { const s = document.createElement('span'); s.className = 'edge note-stay'; s.textContent = note; head.append(s); }
     const grid = document.createElement('div'); grid.className = 'grid';
     for (const { p, i } of items) {
       const b = document.createElement('button');
-      b.className = 'ph' + (p.category !== p.first ? ' changed' : '') + (state.picked && state.picked.has(i) ? ' picked' : '');
+      b.className = 'ph' + (p.category !== p.first ? ' changed' : '') + (!done && state.picked && state.picked.has(i) ? ' picked' : '');
       b.dataset.index = i;
       b.setAttribute('aria-label', p.name + ', ' + (p.kind === 'video' ? 'video, ' : '') + p.category);
       if (p.thumb) { const img = document.createElement('img'); img.src = p.thumb; img.alt = ''; b.append(img); }
       else { const s = document.createElement('span'); s.className = 'bad'; s.textContent = 'no preview'; b.append(s); }
       if (p.kind === 'video') { const v = document.createElement('span'); v.className = 'vid'; v.textContent = '▶' + (p.duration ? ' ' + fmtDur(p.duration) : ''); b.append(v); }
-      holdToPick(b, i);
-      b.addEventListener('click', () => {
-        if (held) { held = false; return; }       // the end of a long press, not a tap
-        if (state.picked) pick(i); else openSheet([i]);
-      });
+      if (done) b.addEventListener('click', () => openSheet([i], true));
+      else {
+        holdToPick(b, i);
+        b.addEventListener('click', () => {
+          if (held) { held = false; return; }       // the end of a long press, not a tap
+          if (state.picked) pick(i); else openSheet([i]);
+        });
+      }
       grid.append(b);
     }
     g.append(head, grid);
     box.append(g);
   }
-  const n = toCopy().length;
-  $('#btn-copy').textContent = 'Copy ' + n;
-  $('#btn-copy').disabled = n === 0;
+}
+
+function renderReview() {
+  renderGroups($('#groups'), false);
   reviewBar();
   $('#review-details-text').textContent = runDetails();
 }
 
-// The film edge, the caption and the buttons, which change while picking several.
+// The film edge, the caption and the buttons, which change while picking several
+// and with copy or move.
 function reviewBar() {
   barButtons();
+  const n = toCopy().length;
+  $('#btn-copy').textContent = (state.doMove ? 'Move ' : 'Copy ') + n;
+  $('#btn-copy').disabled = n === 0;
+  $('#review-do').hidden = state.recheck;
+  $('#do-copy').setAttribute('aria-checked', String(!state.doMove));
+  $('#do-move').setAttribute('aria-checked', String(state.doMove));
   if (state.picked) {
     $('#bar-edge').textContent = countText([...state.picked].map((i) => state.plan[i])) + ' picked';
     $('#review-cap').textContent = 'Tap more pictures to pick them, or a picked one to leave it out. Send to puts them all in one folder.';
     return;
   }
-  const n = toCopy().length;
   $('#bar-edge').textContent = state.recheck ? 're-check ▸ ' + countText(state.plan) + ' ▸ nothing copied' : countText(state.plan) + ' ▸ ' + (state.plan.length - n) + ' stay';
   $('#review-cap').textContent = state.recheck ? 'A re-check: nothing will be copied. Copy the run details to compare.'
-    : 'Tap a picture to send it to another folder; press and hold to pick several. Nothing is copied until you tap Copy.';
+    : (state.autoStopped ? 'Auto stopped before moving anything. ' : '') + 'Tap a picture to send it to another folder; press and hold to pick several. ' +
+      (state.doMove ? 'Nothing is moved until you tap Move: each file is copied, the copy checked byte for byte, and only then the original deleted.'
+        : 'Nothing is copied until you tap Copy.');
 }
 
 // Picking several (Gary, 30/10/26): a long press on a picture starts it with that
@@ -1926,12 +2140,13 @@ function endPicking() { state.picked = null; renderReview(); }
 
 // The sheet: send one picture, or every picked one, to a folder.
 let sheetItems = [];
-function openSheet(list) {
+function openSheet(list, look = false) {
   sheetItems = list;
   const p = state.plan[list[0]];
   $('#sheet-img').src = p.thumb || '';
   $('#sheet-name').textContent = list.length === 1 ? p.name : countText(list.map((i) => state.plan[i])) + ' picked';
-  $('#sheet-why').textContent = list.length === 1 ? 'filter said ' + p.first + ': ' + p.reason : 'All of them go to the folder you choose.';
+  $('#sheet-why').textContent = list.length > 1 ? 'All of them go to the folder you choose.'
+    : (look && p.outcome ? p.outcome + (p.outcome === 'already there' ? ' in ' : p.outcome === 'failed' ? ' going to ' : ' to ') + p.category + '. ' : '') + 'filter said ' + p.first + ': ' + p.reason;
   const box = $('#sheet-targets');
   box.replaceChildren();
   for (const c of state.cats) {
@@ -1947,6 +2162,8 @@ function openSheet(list) {
     });
     box.append(b);
   }
+  box.hidden = look;
+  $('#sheet-cancel').textContent = look ? 'Close' : 'Cancel';
   $('#veil').hidden = false; $('#sheet').hidden = false;
 }
 function closeSheet() { $('#veil').hidden = true; $('#sheet').hidden = true; sheetItems = []; }
@@ -1955,96 +2172,293 @@ $('#btn-pick-send').addEventListener('click', () => { if (state.picked) openShee
 $('#sheet-cancel').addEventListener('click', closeSheet);
 $('#veil').addEventListener('click', closeSheet);
 
-/* ---------- Copy: the safe copy, then the run log ---------- */
+/* ---------- Copy or move, then the run log ---------- */
 
-// Writing outside core.safeCopy happens only here: the run log, a new file in
-// filter-logs/ that never replaces an existing one. filter_checks.cjs holds the code to that.
-async function writeLog(root, log) {
+// The run log: a new file in filter-logs/ that never replaces another. Its name
+// is found free once, at the start; the run then saves it as it goes (every
+// config.logEvery files), so a run that is cut off still has its log, and undo
+// knows what it did. Writing outside core.transfer happens only here.
+// filter_checks.cjs holds the code to that. prefix: run- or undo-.
+async function runLog(root, prefix) {
   const dir = await root.getDirectoryHandle(LOG_FOLDER, { create: true });
-  let name = 'run-' + stamp() + '.json';
-  for (let k = 2; await core.exists(dir, name); k++) name = 'run-' + stamp() + '-' + k + '.json';
+  let name = prefix + stamp() + '.json';
+  for (let k = 2; await core.exists(dir, name); k++) name = prefix + stamp() + '-' + k + '.json';
   const h = await dir.getFileHandle(name, { create: true });
-  const w = await h.createWritable();
-  await w.write(JSON.stringify(log, null, 1));
-  await w.close();
-  return LOG_FOLDER + '/' + name;
+  return {
+    file: name, name: LOG_FOLDER + '/' + name,
+    async save(log) {
+      const w = await h.createWritable();
+      await w.write(JSON.stringify(log, null, 1));
+      await w.close();
+    },
+  };
 }
 
-async function runCopy() {
+// Every file's decision, copied or not, so a run can be checked and the rules tuned.
+const decisions = () => state.plan.map((p) => ({ name: p.name, kind: p.kind, folder: p.category, suggested: p.first, reason: p.reason,
+  ...(state.runBy === 'example' ? { best: p.best || null, next: p.next || null } : {}), ...(p.frames ? { frames: p.frames } : {}) }));
+
+// Copy (F1 to F3) or move (F4) every file the plan puts in a folder. A move is
+// the safe move: each copy is read back and checked, and only then the original
+// is deleted; after every config.goneEvery moves, and at the end, one fresh
+// listing of the folder checks the originals are gone. Any mismatch stops the
+// run and keeps both. A move is not started without its log: the log is what
+// lets the run be undone.
+async function runTransfer() {
   const items = toCopy();
   if (!items.length) return;
-  const root = state.folder;
-  const total = items.length;
-  const t0 = now();
+  const move = state.doMove, root = state.folder, total = items.length, t0 = now();
+  const verb = move ? 'moving' : 'copying';
+  state.stopRequested = false;
   const log = {
-    app: 'filter', version: APP_VERSION, mode: 'copy', by: state.runBy, folder: root.name,
+    app: 'filter', version: APP_VERSION, mode: move ? 'move' : 'copy', run: state.runAuto ? 'auto' : 'review', by: state.runBy, folder: root.name,
     started: new Date().toISOString(), recognition: state.lastRun, items: [],
   };
   if (state.runBy === 'example') log.examples = state.exampleUse;
-  const out = { copied: 0, skipped: 0, failed: null };
+  log.decisions = decisions();
+  const out = { move, done: 0, skipped: 0, failed: null, stopped: false, gone: { checks: 0, ms: 0 }, del: { n: 0, ms: 0, by: [] } };
   $('#copy-count').textContent = '0 / ' + total;
   $('#copy-fill').style.width = '0';
   $('#copy-cap').textContent = '';
+  $('#btn-stop-copy').hidden = false;
   show('copy');
-  const dirs = {};
+  let saver = null, logError = null;
+  step('writing the log');
+  try { saver = await runLog(root, 'run-'); await saver.save(log); } catch (e) { logError = errText(e); }
+  if (move && logError) {
+    out.failed = { name: '(the log)', step: 'writing the log', reason: logError + '; nothing was moved', copyMade: false };
+    return showDone(out, null, logError, now() - t0, total);
+  }
+  const save = async () => {
+    if (!saver) return true;
+    try { await saver.save(log); return true; } catch (e) { logError = errText(e); return false; }
+  };
+  const dirs = {}, deleted = [];
+  // One fresh listing of the picked folder: every original deleted since the
+  // last check must be gone from it.
+  const checkGone = async () => {
+    if (!deleted.length) return;
+    step('checking the originals are gone');
+    $('#copy-cap').textContent = 'Checking ' + plural(deleted.length, 'original') + ' are gone (one listing of ' + root.name + ')';
+    const t = now();
+    const l = await core.listAll(root, { batch: config.batch, stallMs: config.stallMs });
+    out.gone.checks++; out.gone.ms += now() - t;
+    const still = new Set(l.stalled ? deleted : core.stillThere(deleted, l.names)), just = new Set(deleted);
+    for (const it of log.items) if (just.has(it.name)) it.gone = l.stalled ? null : !still.has(it.name);
+    deleted.length = 0;
+    if (still.size && !out.failed) {
+      out.failed = { name: [...still][0], step: 'check gone', copyMade: true,
+        reason: l.stalled ? 'the listing of ' + root.name + ' stalled, so filter could not check the originals are gone' : 'still listed after its delete' };
+    }
+  };
   try {
     for (let i = 0; i < items.length; i++) {
+      if (state.stopRequested) { out.stopped = true; break; }
       const p = items[i];
       if (!dirs[p.category]) {
         step('making the ' + p.category + ' folder');
         $('#copy-cap').textContent = 'Making the ' + p.category + ' folder (slow in a big folder)';
         dirs[p.category] = await root.getDirectoryHandle(p.category, { create: true });
       }
-      step('copying ' + (i + 1) + ' of ' + total);
+      step(verb + ' ' + (i + 1) + ' of ' + total);
       // Each step shows, so a long video visibly moves from copy to read back to compare.
-      const r = await core.safeCopy(p.handle, p.name, dirs[p.category], { existing: state.sorted[p.category],
-        onStep: (s) => { $('#copy-cap').textContent = p.name + ' ▸ ' + p.category + ' ▸ ' + s; } });
+      const opts = { existing: state.sorted[p.category], onStep: (st) => { $('#copy-cap').textContent = p.name + ' ▸ ' + p.category + ' ▸ ' + st; } };
+      const r = move ? await core.safeMove(p.handle, p.name, root, dirs[p.category], opts) : await core.safeCopy(p.handle, p.name, dirs[p.category], opts);
       log.items.push({ name: p.name, kind: p.kind, from: '.', to: p.category, suggested: p.first, reason: p.reason,
-        size: r.size, sha256: r.sha256, copySha256: r.copySha256 || null, ok: r.ok, skipped: r.skipped, step: r.step, problem: r.reason || null });
-      if (r.ok) { out.copied++; state.sorted[p.category].add(p.name); state.sortedAll.add(p.name); }
-      else if (r.skipped) out.skipped++;
-      else { out.failed = r; break; }      // a mismatch or error stops the run; both files are kept
+        size: r.size, sha256: r.sha256, copySha256: r.copySha256 || null, ok: r.ok, skipped: r.skipped, copyMade: r.copyMade,
+        ...(move ? { moved: r.moved, deletedBy: r.deletedBy || null } : {}), step: r.step, problem: r.reason || null, ms: r.ms });
+      if (r.ok) { out.done++; p.outcome = move ? 'moved' : 'copied'; state.sorted[p.category].add(p.name); state.sortedAll.add(p.name); }
+      else if (r.skipped) { out.skipped++; p.outcome = 'already there'; }
+      else { out.failed = r; p.outcome = 'failed'; break; }      // a mismatch or error stops the run; both files are kept
+      if (r.moved) { deleted.push(p.name); out.del.n++; out.del.ms += r.ms.delete; if (!out.del.by.includes(r.deletedBy)) out.del.by.push(r.deletedBy); }
       $('#copy-count').textContent = (i + 1) + ' / ' + total;
       $('#copy-fill').style.width = (100 * (i + 1) / total) + '%';
+      if (deleted.length >= config.goneEvery) { await checkGone(); if (out.failed) break; }
+      if ((i + 1) % config.logEvery === 0 && !(await save()) && move) {
+        out.failed = { name: '(the log)', step: 'saving the log', reason: logError, copyMade: false };
+        break;
+      }
     }
   } catch (e) {
     out.failed = { name: '(folder)', step: 'making a folder', reason: errText(e), copyMade: false };
   }
-  // Every file's decision, copied or not, so a run can be checked and the rules tuned.
-  log.decisions = state.plan.map((p) => ({ name: p.name, kind: p.kind, folder: p.category, suggested: p.first, reason: p.reason,
-    ...(state.runBy === 'example' ? { best: p.best || null, next: p.next || null } : {}), ...(p.frames ? { frames: p.frames } : {}) }));
+  await checkGone();
   log.finished = new Date().toISOString();
-  log.result = { copied: out.copied, skipped: out.skipped, stayed: state.plan.length - total, stopped: out.failed ? out.failed.name + ': ' + out.failed.reason : null };
-  let logName = null, logError = null;
+  const stopped = out.failed ? out.failed.name + ': ' + out.failed.reason : out.stopped ? 'stopped by you' : null;
+  log.result = move ? { moved: out.done, skipped: out.skipped, stayed: state.plan.length - total, stopped }
+    : { copied: out.done, skipped: out.skipped, stayed: state.plan.length - total, stopped };
   step('writing the log');
-  try { logName = await writeLog(root, log); } catch (e) { logError = errText(e); }
-  showDone(out, logName, logError, now() - t0, total);
+  if (!saver) { try { saver = await runLog(root, 'run-'); } catch (e) { logError = errText(e); } }
+  const saved = saver ? await save() : false;
+  showDone(out, saved ? saver.name : null, logError, now() - t0, total, saver && saver.file);
+}
+
+// Undo of a run (F4): every file the run put in a folder goes back the safe way,
+// whatever the run did. A file only in its folder is moved back into the picked
+// folder (the safe move); a copy whose original is still in the picked folder is
+// deleted, only if byte-identical (core.dropCopy). Each file's state now says
+// what it needs (core.undoStep), so an undo that was stopped can simply be run
+// again. It writes its own log (undo-...json) and leaves the run's as it is.
+async function runUndo(file) {
+  const root = state.folder, t0 = now();
+  state.stopRequested = false;
+  state.plan.forEach((p) => { p.outcome = undefined; });
+  const out = { undo: true, back: 0, dropped: 0, nothing: 0, differs: 0, missing: 0, failed: null, stopped: false, lines: [] };
+  $('#copy-count').textContent = '0 / 0';
+  $('#copy-fill').style.width = '0';
+  $('#copy-cap').textContent = 'Reading the run log';
+  $('#btn-stop-copy').hidden = false;
+  show('copy');
+  let run;
+  try {
+    step('reading the run log');
+    run = JSON.parse(await (await (await (await root.getDirectoryHandle(LOG_FOLDER)).getFileHandle(file)).getFile()).text());
+  } catch (e) {
+    out.failed = { name: LOG_FOLDER + '/' + file, step: 'reading the run log', reason: errText(e) + '; nothing was undone' };
+    return showUndone(out, null, null, now() - t0, 0, file);
+  }
+  const items = core.undoItems(run), total = items.length;
+  $('#copy-count').textContent = '0 / ' + total;
+  step('listing ' + root.name);
+  $('#copy-cap').textContent = 'Listing ' + root.name + ' (a few seconds in a big folder)';
+  const top = await core.listAll(root, { batch: config.batch, stallMs: config.stallMs });
+  if (top.stalled) {
+    out.failed = { name: root.name, step: 'listing', reason: 'the listing stalled, so filter cannot be sure what is there; nothing was undone' };
+    return showUndone(out, null, null, now() - t0, total, file);
+  }
+  const atRoot = new Set([...top.names.keys()]);
+  const log = { app: 'filter', version: APP_VERSION, mode: 'undo', undoes: LOG_FOLDER + '/' + file, folder: root.name, started: new Date().toISOString(), items: [] };
+  let saver = null, logError = null;
+  step('writing the log');
+  try { saver = await runLog(root, 'undo-'); await saver.save(log); } catch (e) { logError = errText(e); }
+  if (!saver || logError) {
+    out.failed = { name: '(the log)', step: 'writing the log', reason: logError + '; nothing was undone' };
+    return showUndone(out, null, logError, now() - t0, total, file);
+  }
+  const subs = {}, deleted = {};
+  try {
+    for (let i = 0; i < items.length; i++) {
+      if (state.stopRequested) { out.stopped = true; break; }
+      const it = items[i];
+      if (!(it.to in subs)) {
+        let d = null;
+        try { d = await root.getDirectoryHandle(it.to); } catch (e) { if (!e || e.name !== 'NotFoundError') throw e; }
+        subs[it.to] = d && { dir: d, names: (await core.listAll(d, { batch: config.batch, stallMs: config.stallMs })).names };
+        deleted[it.to] = [];
+      }
+      const sub = subs[it.to], h = sub && sub.names.get(it.name);
+      const action = core.undoStep(!!h && h.kind === 'file', atRoot.has(it.name));
+      step('undoing ' + (i + 1) + ' of ' + total);
+      const onStep = (st) => { $('#copy-cap').textContent = it.name + ' ▸ ' + it.to + ' ▸ ' + st; };
+      const line = { name: it.name, from: it.to, to: '.', action };
+      let r = null;
+      if (action === 'move back') {
+        r = await core.safeMove(h, it.name, sub.dir, root, { existing: atRoot, onStep });
+        if (r.ok) { out.back++; atRoot.add(it.name); deleted[it.to].push(it.name); }
+        else if (r.skipped) { line.action = 'kept'; out.differs++; }     // a file of that name came into the picked folder since the listing
+      } else if (action === 'drop copy') {
+        r = await core.dropCopy(h, sub.dir, it.name, top.names.get(it.name), { onStep });
+        if (r.ok) { out.dropped++; deleted[it.to].push(it.name); }
+        else if (r.differs) { line.action = 'kept both'; out.differs++; }
+      } else out[action]++;
+      if (r) Object.assign(line, { size: r.size, sha256: r.sha256 || null, copySha256: r.copySha256 || null, ok: r.ok, step: r.step, problem: r.reason || null, deletedBy: r.deletedBy || null });
+      log.items.push(line);
+      out.lines.push(line);
+      if (r && !r.ok && !r.skipped && !r.differs) { out.failed = r; break; }
+      $('#copy-count').textContent = (i + 1) + ' / ' + total;
+      $('#copy-fill').style.width = (100 * (i + 1) / total) + '%';
+      if ((i + 1) % config.logEvery === 0) {
+        try { await saver.save(log); } catch (e) { logError = errText(e); out.failed = { name: '(the log)', step: 'saving the log', reason: logError }; break; }
+      }
+    }
+  } catch (e) {
+    out.failed = { name: '(folder)', step: 'opening a folder', reason: errText(e) };
+  }
+  // The folders filter took files out of are small: one fresh listing of each says they are gone.
+  for (const [to, names] of Object.entries(deleted)) {
+    if (!names.length) continue;
+    step('checking ' + to);
+    const l = await core.listAll(subs[to].dir, { batch: config.batch, stallMs: config.stallMs });
+    const still = new Set(l.stalled ? names : core.stillThere(names, l.names));
+    for (const x of log.items) if (x.from === to && names.includes(x.name)) x.gone = l.stalled ? null : !still.has(x.name);
+    if (still.size && !out.failed) out.failed = { name: to + '/' + [...still][0], step: 'check gone', reason: l.stalled ? 'the listing stalled, so filter could not check it is gone' : 'still listed after its delete' };
+  }
+  log.finished = new Date().toISOString();
+  log.result = { movedBack: out.back, copiesRemoved: out.dropped, kept: out.differs, nothing: out.nothing, missing: out.missing,
+    stopped: out.failed ? out.failed.name + ': ' + out.failed.reason : out.stopped ? 'stopped by you' : null };
+  step('writing the log');
+  let saved = true;
+  try { await saver.save(log); } catch (e) { logError = errText(e); saved = false; }
+  showUndone(out, saved ? saver.name : null, logError, now() - t0, total, file);
 }
 
 // "1.1 s per photo, 4.0 s per video", for the kinds the run had.
 const paceText = (r) => [r.photos ? fmtS(r.perPhotoMs) + ' per photo' : null, r.videos ? fmtS(r.perVideoMs) + ' per video' : null].filter(Boolean).join(', ') || 'nothing recognised';
 
-function showDone(out, logName, logError, ms, total) {
-  const f = out.failed;
-  $('#done-title').textContent = f ? 'Stopped' : 'Done';
+// The done screen after a copy or a move: what was done, the grids of what went
+// where, and Undo this run.
+function showDone(out, logName, logError, ms, total, file) {
+  const f = out.failed, move = out.move, r = state.lastRun;
+  $('#done-title').textContent = f ? 'Stopped' : out.stopped ? 'Stopped by you' : 'Done';
   $('#done-edge').textContent = fmtDate(Date.now()) + ' ▸ ' + fmtTime(Date.now());
-  $('#done-note').textContent = f
-    ? 'Stopped at ' + f.name + ' (' + f.step + '): ' + f.reason + '. The original is untouched.' +
-      (f.copyMade ? ' The faulty copy is in the folder beside it; nothing was deleted.' : '')
-    : '';
+  $('#done-note').textContent = !f ? (out.stopped ? 'Stopped after ' + plural(out.done + out.skipped, 'file') + '. The rest are where they were.' : '')
+    : f.step === 'check gone' ? 'Stopped: ' + f.name + ' is ' + f.reason + '. Its copy was checked byte for byte first, so nothing is lost; both are kept.'
+    : f.step === 'delete original' ? 'Stopped at ' + f.name + ' (delete original): ' + f.reason + '. Its copy was checked byte for byte first and is kept; the original may still be there too.'
+    : 'Stopped at ' + f.name + ' (' + f.step + '): ' + f.reason + '. The original is untouched.' +
+      (f.copyMade ? ' The faulty copy is in the folder beside it; nothing was deleted.' : '');
   const changed = state.plan.filter((p) => p.category !== p.first).length;
-  const r = state.lastRun;
+  const del = out.del.n ? fmtS(out.del.ms / out.del.n) + ' per original, ' + out.del.by.map((b) => (b === 'handle' ? 'through its own handle' : 'by name in the folder')).join(' and ') : 'none';
   rows($('#done-rows'), [
-    ['Copied', out.copied + ' of ' + total + ', each read back and checked (size and SHA-256)', f ? 'watch' : 'pass'],
+    move ? ['Moved', out.done + ' of ' + total + ', each copy read back and checked (size and SHA-256) before its original was deleted', f ? 'watch' : 'pass']
+      : ['Copied', out.done + ' of ' + total + ', each read back and checked (size and SHA-256)', f ? 'watch' : 'pass'],
     ['Already there', String(out.skipped)],
-    ['Stayed', (state.plan.length - total) + ' in ' + state.stay + ', not copied'],
-    ['You changed', changed + ' of ' + state.plan.length],
-    ['Copy time', fmtS(ms)],
-    ['Recognition', r ? paceText(r) + ', ' + (r.by === 'example' ? 'by example' : 'closer look for ' + r.closer + ' of ' + plural(r.looks, 'look')) : 'none'],
-    ['Log', logName || 'NOT written: ' + logError, logName ? undefined : 'fail'],
-  ]);
+    ['Stayed', (state.plan.length - total) + ' in ' + state.stay + (move ? ', not moved' : ', not copied')],
+  ].concat(state.runAuto ? [] : [['You changed', changed + ' of ' + state.plan.length]],
+    move ? [['Deleting', del], ['Gone', out.gone.checks ? 'checked by ' + plural(out.gone.checks, 'fresh listing') + ' of ' + state.folder.name + ', ' + fmtS(out.gone.ms / out.gone.checks) + ' each' : 'nothing to check']] : [],
+    [[move ? 'Move time' : 'Copy time', fmtS(ms)],
+      ['Recognition', r ? paceText(r) + ', ' + (r.by === 'example' ? 'by example' : 'closer look for ' + r.closer + ' of ' + plural(r.looks, 'look')) : 'none'],
+      ['Log', logName || 'NOT written: ' + logError, logName ? undefined : 'fail']]));
+  state.doneLog = logName ? file : null;
+  const u = $('#btn-undo');
+  u.hidden = !state.doneLog || !state.plan.some((p) => p.outcome === 'copied' || p.outcome === 'moved' || p.outcome === 'failed');
+  u.dataset.label = u.textContent = 'Undo this run';
+  renderGroups($('#done-groups'), true);
   $('#details-text').textContent = runDetails();
   show('done');
+}
+
+// The done screen after an undo: what went back, and anything kept.
+function showUndone(out, logName, logError, ms, total, file) {
+  const f = out.failed;
+  $('#done-title').textContent = f ? 'Stopped' : out.stopped ? 'Stopped by you' : 'Undone';
+  $('#done-edge').textContent = fmtDate(Date.now()) + ' ▸ ' + fmtTime(Date.now());
+  $('#done-note').textContent = f ? 'Stopped at ' + f.name + ' (' + f.step + '): ' + f.reason + '. Nothing is lost: a file is only deleted once its copy is checked byte for byte. Undo the last run again to carry on.'
+    : out.stopped ? 'Stopped. Undo the last run again to carry on from here.' : '';
+  rows($('#done-rows'), [
+    ['Undid', LOG_FOLDER + '/' + file + ', ' + plural(total, 'file')],
+    ['Moved back', out.back + ', each copy read back and checked (size and SHA-256) before the one in the folder was deleted', f ? 'watch' : 'pass'],
+    ['Copies removed', out.dropped + ', each byte-identical to its original'],
+    ['Kept both', out.differs ? out.differs + ': the copy differs from the original, see the run details' : '0', out.differs ? 'watch' : undefined],
+    ['Nothing to do', String(out.nothing)],
+    ['Missing', out.missing ? out.missing + ': in neither place, see the run details' : '0', out.missing ? 'watch' : undefined],
+    ['Undo time', fmtS(ms)],
+    ['Log', logName || 'NOT written' + (logError ? ': ' + logError : ''), logName ? undefined : 'fail'],
+  ]);
+  state.doneLog = null;
+  $('#btn-undo').hidden = true;
+  $('#done-groups').replaceChildren();
+  state.undoDetails = 'filter v' + APP_VERSION + ' undo ' + fmtDate(Date.now()) + ' ' + fmtTime(Date.now()) + ' of ' + LOG_FOLDER + '/' + file + ', ' + plural(total, 'file') +
+    out.lines.map((x) => '\n' + x.name + ' ▸ ' + undoText(x)).join('');
+  $('#details-text').textContent = state.undoDetails;
+  show('done');
+}
+function undoText(x) {
+  if (x.action === 'move back') return x.ok ? 'moved back from ' + x.from : 'not moved back from ' + x.from + ': ' + x.problem;
+  if (x.action === 'drop copy') return x.ok ? 'copy removed from ' + x.from + ' (identical to the original)' : 'copy in ' + x.from + ' not removed: ' + x.problem;
+  if (x.action === 'kept both') return 'kept both: ' + x.problem.replace(/: both kept$/, '') + ' (in ' + x.from + ')';
+  if (x.action === 'kept') return 'kept in ' + x.from + ': a file of that name is in the picked folder';
+  if (x.action === 'nothing') return 'nothing to do';
+  return 'missing: in neither ' + x.from + ' nor the picked folder';
 }
 
 // The run as plain text: one line per file with its folder and the reason, for
@@ -2055,7 +2469,7 @@ function runDetails() {
   const r = state.lastRun || {};
   const ex = state.runBy === 'example';
   const videos = state.plan.some((p) => p.kind === 'video');
-  const head = 'filter v' + APP_VERSION + (state.recheck ? ' re-check' : ' run') + (ex ? ' by example' : '') + ' ' + fmtDate(Date.now()) + ' ' + fmtTime(Date.now()) + ', ' +
+  const head = 'filter v' + APP_VERSION + (state.recheck ? ' re-check' : state.runAuto ? ' auto run' : ' run') + (ex ? ' by example' : '') + ' ' + fmtDate(Date.now()) + ' ' + fmtTime(Date.now()) + ', ' +
     countText(state.plan) + ', ' + paceText(r) + ', ' +
     (ex ? 'examples ' + state.exampleUse.map((u) => u.folder + ' ' + u.photos.length + (u.videos.length ? ' + ' + plural(u.videos.length, 'video') : '')).join(', ') +
       ', bars ' + RULES.minSim.toFixed(2) + ' and gap ' + RULES.minGap.toFixed(2) + (videos ? ', for videos ' + RULES.minSimVideo.toFixed(2) + ' and ' + RULES.minGapVideo.toFixed(2) : '')
@@ -2077,12 +2491,17 @@ $('#btn-allow').addEventListener('click', () => task('asking for access', allowA
 $('#btn-change').addEventListener('click', () => task('picking a folder', pickFolder));
 $('#btn-sort').addEventListener('click', () => task('sorting', runSort));
 $('#btn-stop-run').addEventListener('click', () => { state.stopRequested = true; step('stopping after this one'); });
-$('#btn-copy').addEventListener('click', () => task('copying', runCopy));
+$('#btn-copy').addEventListener('click', () => task(state.doMove ? 'moving' : 'copying', runTransfer));
+$('#btn-stop-copy').addEventListener('click', () => { state.stopRequested = true; $('#btn-stop-copy').hidden = true; step('stopping after this file'); });
+$('#do-copy').addEventListener('click', () => { state.doMove = false; renderReview(); });
+$('#do-move').addEventListener('click', () => { state.doMove = true; renderReview(); });
+$('#run-review').addEventListener('click', () => { state.auto = false; setupChoice(); });
+$('#run-auto').addEventListener('click', () => { state.auto = true; setupChoice(); });
 $('#btn-again').addEventListener('click', () => task('reading the folder', () => openFolder(state.folder)));
 // Run details to the clipboard, from the review or the done screen. If the
 // clipboard refuses, the text is opened and selected for copying by hand.
 async function copyDetails(panel, pre) {
-  const text = runDetails();
+  const text = pre.id === 'details-text' && state.undoDetails ? state.undoDetails : runDetails();
   pre.textContent = text;
   try { await navigator.clipboard.writeText(text); notice('Run details copied.'); }
   catch (e) {
@@ -2098,6 +2517,23 @@ $('#recheck').addEventListener('change', setupChoice);
 $('#newest').addEventListener('input', () => { const v = Math.round(+$('#newest').value); state.newestTyped = v >= 1 ? Math.min(v, config.maxNewest) : null; });
 $('#by-description').addEventListener('click', () => rememberBy('description'));
 $('#by-example').addEventListener('click', () => rememberBy('example'));
+
+// Two taps to undo, as an undo moves and deletes files: the first only asks.
+function twoTaps(b, fn) {
+  let armed = 0;
+  b.addEventListener('click', () => {
+    if (Date.now() - armed > 3000) {
+      armed = Date.now();
+      b.textContent = 'Sure? Tap again to undo';
+      setTimeout(() => { if (armed && Date.now() - armed >= 3000) { armed = 0; b.textContent = b.dataset.label; } }, 3000);
+      return;
+    }
+    armed = 0; b.textContent = b.dataset.label;
+    fn();
+  });
+}
+twoTaps($('#btn-undo'), () => task('undoing', () => runUndo(state.doneLog)));
+twoTaps($('#btn-undo-last'), () => task('undoing', () => runUndo(state.lastLog.file)));
 
 // Two taps to start over, so a stray tap does not lose a reviewed plan.
 let restartArmed = 0;

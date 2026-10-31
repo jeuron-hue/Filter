@@ -2,14 +2,15 @@
 # filter_mutate.sh: mutation run over the core functions: folder reading, choosing
 # the newest photos and videos, reading photo headers, the sorting rules, comparing
 # photos with Gary's examples (F2), a video's frames and their vote (F3), the
-# SHA-256 and the safe copy.
+# SHA-256, the safe copy and the safe move, and undo's rules (F4).
 #
 # The idea: plant one small, deliberate bug (a "mutant") in the CORE block of
 # filter.html, run the core behaviour tests against it, and expect them to
 # fail. A mutant the tests do not notice has "survived", which means the
 # tests are too loose and need tightening. Every mutant should be killed.
-# For the safe copy this matters most: each "copy:" mutant is a way a copy could
-# overwrite a file or pass off a damaged one, and the tests must catch every one.
+# For the safe copy and move this matters most: each "copy:", "move:", "remove:",
+# "gone:", "undo:" and "drop:" mutant is a way a file could be overwritten,
+# passed off damaged, or lost, and the tests must catch every one.
 #
 # Each line below is: name ||| exact text in CORE ||| replacement.
 # The text must appear exactly once between "// CORE:BEGIN" and "// CORE:END".
@@ -161,6 +162,37 @@ copy: skip not marked ||| log.skipped = true; ||| log.skipped = false;
 copy: copy not marked as made ||| log.copyMade = true; ||| log.copyMade = false;
 copy: steps not reported ||| const at = (s) => { log.step = s; if (opts.onStep) opts.onStep(s); }; ||| const at = (s) => { log.step = s; };
 copy: ok before the compare ||| at('compare'); ||| at('compare'); log.ok = true;
+move: a copy deletes too ||| if (opts.from) { ||| if (true) {
+move: original not checked again ||| if (again.size !== log.size || again.lastModified !== log.modified) { log.reason = 'the original changed during the copy'; return log; } ||| /* not checked */
+move: a change of time ignored ||| again.size !== log.size || again.lastModified !== log.modified ||| again.size !== log.size
+move: never deletes ||| log.deletedBy = await core.removeFile(src, opts.from, name); ||| log.deletedBy = 'handle';
+move: not marked as moved ||| log.moved = true; ||| log.moved = false;
+remove: own handle never used ||| if (typeof h.remove === 'function') { ||| if (false) {
+remove: any refusal deletes by name ||| if (!(e instanceof TypeError || (e && e.name === 'NotSupportedError'))) throw e; ||| /* any refusal */
+remove: no handle support not a fallback ||| e instanceof TypeError || ||| false ||
+remove: says handle when by name ||| return 'name'; ||| return 'handle';
+list: stall not reported ||| if (b.stalled) return { names, stalled: true }; ||| if (b.stalled) return { names, stalled: false };
+list: first batch only ||| if (b.done) return { names, stalled: false }; ||| return { names, stalled: false };
+gone: every name counted as still there ||| deleted.filter((n) => listed.has(n)) ||| deleted.slice()
+gone: none counted as still there ||| deleted.filter((n) => listed.has(n)) ||| []
+undo: skipped files taken back ||| (it.copyMade || it.ok) && ||| true &&
+undo: logs before F4 left out ||| (it.copyMade || it.ok) && ||| (it.copyMade) &&
+undo: no folder named ||| typeof it.to === 'string' && it.to && ||| true &&
+undo: a path accepted ||| !/[/\\]/.test(it.to) && ||| true &&
+undo: filter's own folders reached ||| && !core.exampleProblem(it.to) ||| && true
+undo: a copy beside its original moved back ||| (inSub ? (atRoot ? 'drop copy' : 'move back') ||| (inSub ? (atRoot ? 'move back' : 'move back')
+undo: a lone copy dropped ||| (inSub ? (atRoot ? 'drop copy' : 'move back') ||| (inSub ? (atRoot ? 'drop copy' : 'drop copy')
+undo: missing called nothing ||| (atRoot ? 'nothing' : 'missing') ||| (atRoot ? 'nothing' : 'nothing')
+drop: size not compared ||| if (c.size !== o.size) { log.differs = true; ||| if (false) { log.differs = true;
+drop: hash not compared ||| if (log.copySha256 !== log.sha256) { log.differs = true; ||| if (false) { log.differs = true;
+drop: the original hashed twice ||| log.copySha256 = await core.sha256(c, ||| log.copySha256 = await core.sha256(o,
+drop: deletes the original ||| log.deletedBy = await core.removeFile(copyH, copyDir, name); ||| log.deletedBy = await core.removeFile(origH, copyDir, name);
+drop: a difference not marked ||| log.differs = true; log.reason = 'the copy differs from the original (SHA-256) ||| log.reason = 'the copy differs from the original (SHA-256)
+drop: removal not marked ||| log.removed = true; ||| log.removed = false;
+newest: same-second number ignored ||| (k[0] === key[0] && k[1] > key[1]) ||| false
+newest: number compared as text ||| const k = [m[1], m[2] ? +m[2] : 1]; ||| const k = [m[1], m[2] ? m[2] : 1];
+newest: oldest wins ||| if (!key || k[0] > key[0] || ||| if (!key || k[0] < key[0] ||
+newest: kind of log ignored ||| new RegExp('^' + prefix + ||| new RegExp('^' + 'run-' +
 cosine: second list's size ignored ||| return na && nb ? dot / Math.sqrt(na * nb) : 0; ||| return na && nb ? dot / Math.sqrt(na * na) : 0;
 cosine: no square root ||| dot / Math.sqrt(na * nb) ||| dot / (na * nb)
 cosine: all-zero list gives nonsense ||| return na && nb ? dot / Math.sqrt(na * nb) : 0; ||| return dot / Math.sqrt(na * nb);

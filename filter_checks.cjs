@@ -9,9 +9,11 @@
 //     and every sha256 recorded there matches the file
 //   - the vendored MediaPipe code holds no telemetry and no other site to call
 //   - the service worker caches everything and its version matches APP_VERSION
-//   - copies only (F1 to F3): nothing is deleted, files are written only by the
-//     safe copy and the run log, and folders are made only for copies and the
-//     log, never filter-examples/ (Gary's examples are read only)
+//   - the safe move (F4): a file is deleted only by core.removeFile, called only
+//     by the safe move after its copy is read back and checked and by undo's
+//     dropCopy after its compare; files are written only by the safe copy and
+//     the run log; folders are made only for copies and the log, never
+//     filter-examples/ (Gary's examples are read only), and undo never touches it
 //   - the sorting rules' label names match the labels inside the two models
 //   - every image in the repo carries no EXIF, XMP, IPTC, GPS or text chunks
 //   - CHANGELOG.md: every heading gives version, release date and time; the newest is
@@ -320,38 +322,66 @@ function runChecks() {
     assert(guard > 0 && guard < sw.indexOf('fetch(req)'), 'sw.js must return early for other origins before any fetch');
   });
 
-  check('copies only: nothing is deleted, files are written only by the safe copy and the run log', () => {
+  check('files are deleted only after a checked copy, and written only by the safe copy and the run log', () => {
     const js = stripComments(scriptOf(read('filter.html')));
     const noClass = js.replace(/classList\.remove\(/g, '');     // removing a CSS class is not a file operation
-    for (const banned of [/\.removeEntry\(/, /\.remove\(/, /recursive/, /\.move\(/, /keepExistingData/]) {
-      assert(!banned.test(noClass), 'the script uses ' + banned + ': F1 may not delete, move or append');
+    for (const banned of [/recursive/, /\.move\(/, /keepExistingData/]) {
+      assert(!banned.test(noClass), 'the script uses ' + banned + ': filter never deletes a folder, renames, or appends');
     }
-    const safeCopy = bodyOf(js, /core\.safeCopy = async \(/);
-    const writeLog = bodyOf(js, /async function writeLog\(/);
-    assert(safeCopy && writeLog, 'core.safeCopy and writeLog must both exist');
     const count = (str, re) => (str.match(re) || []).length;
+    const transfer = bodyOf(js, /core\.transfer = async \(/);
+    const removeFile = bodyOf(js, /core\.removeFile = async \(/);
+    const dropCopy = bodyOf(js, /core\.dropCopy = async \(/);
+    const runLog = bodyOf(js, /async function runLog\(/);
+    assert(transfer && removeFile && dropCopy && runLog, 'core.transfer, core.removeFile, core.dropCopy and runLog must all exist');
+    // Every delete goes through core.removeFile: its own handle, or by name in its folder.
+    for (const re of [/\.removeEntry\(/g, /\.remove\(/g]) {
+      assert(count(noClass, re) === count(removeFile, re) && count(removeFile, re) === 1, re + ' may appear once, in core.removeFile, nowhere else');
+    }
+    // ... which is called twice: by the safe move and by undo's dropCopy.
+    const rf = /core\.removeFile\(/g;
+    assert(count(js, rf) === 2 && count(transfer, rf) === 1 && count(dropCopy, rf) === 1, 'core.removeFile may be called once in core.transfer and once in core.dropCopy, nowhere else');
     const wr = /\.createWritable\(/g;
-    assert(count(js, wr) === count(safeCopy, wr) + count(writeLog, wr) && count(safeCopy, wr) === 1 && count(writeLog, wr) === 1,
-      'createWritable may appear once in core.safeCopy and once in writeLog, nowhere else');
-    // The log never replaces a file: it looks for a free name first.
-    assert(writeLog.indexOf('core.exists(dir, name)') > 0 && writeLog.indexOf('core.exists(dir, name)') < writeLog.indexOf('createWritable'), 'writeLog must find a free name before writing');
-    // In the safe copy: read, refuse an existing name, write, read back, compare size, then SHA-256.
-    const order = ['src.getFile()', 'core.exists(toDir, name)', 'createWritable(', 'dst.getFile()', 'copy.size !== orig.size', 'log.copySha256 !== log.sha256', "at('done')"].map((x) => safeCopy.indexOf(x));
-    assert(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1])), 'core.safeCopy must read, check the target, copy, read back, compare size, compare SHA-256, in that order');
+    assert(count(js, wr) === count(transfer, wr) + count(runLog, wr) && count(transfer, wr) === 1 && count(runLog, wr) === 1,
+      'createWritable may appear once in core.transfer and once in runLog, nowhere else');
+    // The log never replaces a file: it looks for a free name before making its own.
+    assert(runLog.indexOf('core.exists(dir, name)') > 0 && runLog.indexOf('core.exists(dir, name)') < runLog.indexOf('getFileHandle(name, { create: true })'), 'runLog must find a free name before making the file');
+    // In the safe copy and move: read, refuse an existing name, write, read back, compare size, then SHA-256;
+    // a move then checks the original is unchanged, and only then deletes it.
+    const order = ['src.getFile()', 'core.exists(toDir, name)', 'createWritable(', 'dst.getFile()', 'copy.size !== orig.size', 'log.copySha256 !== log.sha256',
+      'if (opts.from)', 'again.lastModified !== log.modified', 'core.removeFile(src, opts.from, name)', "at('done')"].map((x) => transfer.indexOf(x));
+    assert(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1])), 'core.transfer must read, check the target, copy, read back, compare size, compare SHA-256, and only for a move recheck the original and delete it, in that order');
+    // A copy never deletes: it passes no folder to delete from.
+    assert(/core\.safeCopy = \(src, name, toDir, opts = \{\}\) => core\.transfer\(src, name, toDir, \{ \.\.\.opts, from: null \}\);/.test(js), 'core.safeCopy must call core.transfer with from: null');
+    // Undo deletes a copy only once it matches the original in size and SHA-256.
+    const drop = ['c.size !== o.size', 'log.copySha256 !== log.sha256', 'core.removeFile(copyH, copyDir, name)'].map((x) => dropCopy.indexOf(x));
+    assert(drop.every((x, i) => x > 0 && (i === 0 || x > drop[i - 1])), 'core.dropCopy must compare size and SHA-256 before deleting the copy');
+    // Moves happen only in the run and in its undo; a copy is dropped only by undo.
+    const runTransfer = bodyOf(js, /async function runTransfer\(/), runUndo = bodyOf(js, /async function runUndo\(/);
+    const mv = /core\.safeMove\(/g, dc = /core\.dropCopy\(/g;
+    assert(count(js, mv) === 2 && count(runTransfer, mv) === 1 && count(runUndo, mv) === 1, 'core.safeMove may be called once in runTransfer and once in runUndo');
+    assert(count(js, dc) === 1 && count(runUndo, dc) === 1, 'core.dropCopy may be called only in runUndo');
+    // A move is not started without its log: the log is what makes it undoable.
+    assert(/if \(move && logError\) \{/.test(runTransfer) && runTransfer.indexOf('if (move && logError)') < runTransfer.indexOf('core.safeMove('), 'runTransfer must stop before any move when the log cannot be written');
   });
 
-  check('filter-examples is read only: folders are made only for copies and the log, and its name is reserved', () => {
+  check('filter-examples is read only: folders are made only for copies and the log, undo never reaches it, and its name is reserved', () => {
     const js = stripComments(scriptOf(read('filter.html')));
-    const runCopy = bodyOf(js, /async function runCopy\(/);
-    const writeLog = bodyOf(js, /async function writeLog\(/);
+    const runTransfer = bodyOf(js, /async function runTransfer\(/);
+    const runLog = bodyOf(js, /async function runLog\(/);
     const mk = /getDirectoryHandle\([^)]*create: true/g;
     const count = (str) => (str.match(mk) || []).length;
-    assert(count(runCopy) === 1 && count(writeLog) === 1 && count(js) === 2,
-      'getDirectoryHandle(..., { create: true }) may appear once in runCopy and once in writeLog, nowhere else');
-    assert(/getDirectoryHandle\(p\.category, \{ create: true \}\)/.test(runCopy), 'runCopy makes only the folder a photo is copied to');
-    assert(/getDirectoryHandle\(LOG_FOLDER, \{ create: true \}\)/.test(writeLog), 'writeLog makes only filter-logs');
+    assert(count(runTransfer) === 1 && count(runLog) === 1 && count(js) === 2,
+      'getDirectoryHandle(..., { create: true }) may appear once in runTransfer and once in runLog, nowhere else');
+    assert(/getDirectoryHandle\(p\.category, \{ create: true \}\)/.test(runTransfer), 'runTransfer makes only the folder a file goes to');
+    assert(/getDirectoryHandle\(LOG_FOLDER, \{ create: true \}\)/.test(runLog), 'runLog makes only filter-logs');
     assert(/const EXAMPLES = 'filter-examples';/.test(js), 'EXAMPLES must be filter-examples');
     assert(/const RESERVED = \[STAY, UNSURE, LOG_FOLDER, EXAMPLES\];/.test(js), 'example folders may not be named other, unsure, filter-logs or filter-examples');
+    // Undo only opens the folders core.undoItems lets through: never one of filter's own names.
+    const undoItems = (js.match(/core\.undoItems = [^\n]*\n[^\n]*/) || [''])[0];
+    assert(/!core\.exampleProblem\(it\.to\)/.test(undoItems), 'core.undoItems must leave out folders named like filter\'s own (filter-examples among them)');
+    const runUndo = bodyOf(js, /async function runUndo\(/);
+    assert(/const items = core\.undoItems\(run\)/.test(runUndo), 'runUndo must take its files from core.undoItems');
   });
 
   check('label groups match the labels inside the classifier model', () => {
@@ -394,7 +424,7 @@ function runChecks() {
     assert(a > 0 && b > a, 'CORE markers missing or out of order');
     assert(html.split('// CORE:BEGIN').length === 2 && html.split('// CORE:END').length === 2, 'CORE markers must appear once each');
     const core = html.slice(a, b);
-    for (const f of ['safeCopy', 'categorize', 'imageInfo', 'pickNewest', 'readBatch', 'facesFrom', 'objectsFrom', 'normBoxes', 'dedupe', 'closerPeople', 'grid', 'textLike', 'mapAhead',
+    for (const f of ['transfer', 'safeCopy', 'safeMove', 'removeFile', 'listAll', 'stillThere', 'undoItems', 'undoStep', 'dropCopy', 'newestLog', 'categorize', 'imageInfo', 'pickNewest', 'readBatch', 'facesFrom', 'objectsFrom', 'normBoxes', 'dedupe', 'closerPeople', 'grid', 'textLike', 'mapAhead',
       'cosine', 'nearest', 'exampleProblem', 'leastSureFirst', 'sha256', 'sha256Stream', 'meanVec', 'frameTimes', 'videoVote']) {
       assert(new RegExp('core\\.' + f + ' = ').test(core), 'core.' + f + ' must sit inside CORE');
     }

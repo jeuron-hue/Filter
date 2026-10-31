@@ -2,6 +2,16 @@
 
 What changed in each version, newest first. Why each change was made, and what Gary's runs on the Pixel showed, is in CLAUDE.md under Phases. Each heading gives the version, the date and time it was released (Singapore time, 24-hour) and the phase.
 
+## v0.4.0, 31/10/26 0955 hrs, F4
+- Move, alongside copy. On the review a Copy or Move switch (Copy at the start of every run); the bar button reads Copy N or Move N. A move is the safe move: each copy is read back and checked byte for byte (size and SHA-256), the original is read again to make sure it did not change, and only then deleted.
+- Originals are deleted through the file's own handle, not looked up by name, which costs seconds in a big folder. The log records each delete's way and time, and the done screen shows the average.
+- Originals are checked gone by one fresh listing of the folder every 50 moves and at the end (goneEvery). A name still listed, or a listing that stalls, stops the run with both kept.
+- Auto mode: a Review first or Auto switch on the setup screen; Sort and move sorts and moves straight away. Not remembered, so filter opens on Review first; a re-check turns it off; stopped during recognition, it shows the plan with nothing moved.
+- Undo of the last run, copy or move: Undo this run on the done screen, and Undo last run on the folder screen after a restart, both two taps. A file only in its folder is moved back the safe way; a copy beside its original is deleted only if byte-identical; a copy that differs is kept and reported. An undo that stops can be run again. It writes its own log, undo-...json.
+- The run log is written before the first file and saved every 10 files (logEvery) and at the end, so a run cut off still has its log; a move does not start without one. Logs now record copy or move, Review or Auto, and per file whether a copy was made, whether it moved, the delete's way and whether the original was checked gone.
+- Every copy or move ends on the done screen with the grids of what went where; a tap shows why. A Stop after this file button while copying, moving or undoing.
+- Tests: the safe move and its faults (a bad copy, an original that changes, a refused delete, a folder whose deletes do nothing), undo of copy and move runs, a log that cannot be written, a stop part way, and undo after a restart. The static check now holds every delete to one function, called only after a checked copy or an identical match. New mutants for the move, the delete, the gone check, undo's rules and the log picked.
+
 ## v0.3.4, 30/10/26 2116 hrs, F3
 - Keeps the screen on while filter works (Screen Wake Lock), taken again when filter comes back on screen. A refusal, say on low battery, does not stop the run.
 - A video being read when filter left the screen is read again once it is back, up to 3 tries in all. Photos and copies simply wait; an interrupted copy is never counted as done.
