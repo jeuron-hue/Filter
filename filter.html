@@ -24,7 +24,7 @@ overwrites anything, and never writes to filter-examples/. Each run writes a log
 to filter-logs/ in the picked folder, saved as the run goes; Undo takes the last
 run back the same safe way.
 
-APP_VERSION 0.4.0 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.4.1 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -395,7 +395,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '0.4.1';
 
 // The folders filter knows, in the order they are shown. Photos and videos in
 // "other" stay where they are: nothing is copied for them.
@@ -430,6 +430,7 @@ const config = {
   frameNudge: 0.1,      // ... each this many seconds later than the last
   frameWaitMs: 3000,    // how long to wait for the browser to show the frame asked for
   frameSlack: 0.25,     // ... a frame shown this close in time (seconds) counts as it
+  framePrint: 32,       // a frame is compared with the video's earlier frames at this size (pixels a side)
   holdMs: 500,          // review: a press this long on a picture starts picking several
   videoTries: 3,        // a video read while filter left the screen is read again, up to this many times in all
   logEvery: 10,         // the run log is saved after this many files, so a run cut off still has its log
@@ -982,6 +983,13 @@ core.meanVec = (vecs) => {
 // When to look at a video: at each share of its length in `at` (10 %, 50 %, 90 %).
 // A video with no length that can be read gives no times, so it is not recognised.
 core.frameTimes = (duration, at) => (Number.isFinite(duration) && duration > 0 ? at.map((k) => k * duration) : []);
+
+// Two frames of a video seconds apart are never the very same picture: a camera's
+// noise alone changes them. So a frame whose small copy (its pixels, as bytes) is
+// identical to an earlier frame's was taken stale, the earlier frame handed over
+// again (Gary's runs, 05/11/26: two frames 1.8 s apart with the very same scores,
+// though the browser said the right frame was on show).
+core.samePicture = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 // A video by description: each frame read went through the rules on its own;
 // frames: [{ category, reason }]. A frame in `stay` (other) saw nothing clear, so
@@ -1767,11 +1775,12 @@ async function videoFrames(entry) {
     if (!w || !h) throw new Error('no picture in it');
     const times = core.frameTimes(v.duration, config.frameAt);
     if (!times.length) throw new Error('its length cannot be read');
-    const k = Math.min(1, config.closeSide / Math.max(w, h));
+    const k = Math.min(1, config.closeSide / Math.max(w, h)), seen = [];
     for (const at of times) {
-      const got = await frameAt(v, at, { resizeWidth: Math.max(1, Math.round(w * k)), resizeHeight: Math.max(1, Math.round(h * k)), resizeQuality: 'medium' });
-      const f = { at, sure: got.sure, big: got.bmp };
+      const got = await frameAt(v, at, { resizeWidth: Math.max(1, Math.round(w * k)), resizeHeight: Math.max(1, Math.round(h * k)), resizeQuality: 'medium' }, seen);
+      const f = { at, sure: got.sure, repeat: got.repeat, big: got.bmp };
       frames.push(f);
+      seen.push(got.print);
       f.bmp = await smaller(f.big);
     }
     return { entry, info: { format: null, make: null }, frames, size: { w, h }, duration: v.duration, ms: now() - t0 };
@@ -1786,41 +1795,65 @@ async function videoFrames(entry) {
   }
 }
 
-// The frame at `at` seconds, as { bmp, sure }. On the phone a seek can say it is
-// done before the new frame is on show: Gary's first run (30/10/26) had one video
-// refused with "the image source is not usable", and his next runs showed the
-// same picture taken for two or three frames (the very same scores), so one video
-// went to different folders on two runs. So this waits until the browser shows a
-// frame from the time asked for (sure: true), or config.frameWaitMs passes (sure:
-// false, kept in the run details); if taking it still fails, it seeks again a
-// little later (config.frameNudge seconds each time) up to config.frameTries times.
-async function frameAt(v, at, opts) {
+// The frame at `at` seconds, as { bmp, sure, repeat, print }. On the phone a seek
+// can say it is done before the new frame is on show: Gary's first run (30/10/26)
+// had one video refused with "the image source is not usable", and his next runs
+// showed the same picture taken for two or three frames (the very same scores),
+// so one video went to different folders on two runs. So this waits until the
+// browser shows a frame from the time asked for (sure: true), or
+// config.frameWaitMs passes (sure: false, kept in the run details), and takes the
+// picture right then, in the browser's own "this frame is on show" call. Even so,
+// on 05/11/26 a frame came out as the very picture of an earlier one, the browser
+// saying all along it showed the right one; so the picture itself is checked
+// against the video's earlier frames (seen, each one's print). If taking it fails,
+// or it is the same picture as an earlier frame, it seeks again a little later
+// (config.frameNudge seconds each time) up to config.frameTries times; a frame
+// still the same after that is kept and marked (repeat: true) in the run details.
+async function frameAt(v, at, opts, seen = []) {
   for (let k = 0; ; k++) {
     const t = Math.min(at + k * config.frameNudge, v.duration);
-    const shown = frameShown(v, t);
+    const shown = frameShown(v, t, opts);
     await mediaEvent(v, 'seeked', () => { v.currentTime = t; });
     try {
       if (v.readyState < 2) await mediaEvent(v, 'canplay', () => {});
-      const sure = await shown;
-      return { bmp: await createImageBitmap(v, opts), sure };
+      const s = await shown;
+      const bmp = await (s.bmp || createImageBitmap(v, opts));
+      const print = printOf(bmp);
+      const repeat = seen.some((x) => core.samePicture(x, print));
+      if (repeat && k + 1 < config.frameTries) { bmp.close(); continue; }
+      return { bmp, sure: s.sure, repeat, print };
     } catch (e) {
       if (k + 1 >= config.frameTries) throw e;
     }
   }
 }
 
-// True once the video shows a frame from within config.frameSlack seconds of t;
-// false if none does within config.frameWaitMs, or the browser cannot say.
-// Asked before the seek starts, so the frame it brings is not missed. The
-// browser only shows frames of a video on the page, hence #video-stage.
-function frameShown(v, t) {
-  if (!v.requestVideoFrameCallback) return Promise.resolve(false);
+// A frame's small copy, as bytes, to tell whether two frames are the same picture.
+function printOf(bmp) {
+  const n = config.framePrint, c = new OffscreenCanvas(n, n);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0, n, n);
+  return Array.from(ctx.getImageData(0, 0, n, n).data);
+}
+
+// { sure: true, bmp } once the video shows a frame from within config.frameSlack
+// seconds of t, its picture taken in that same call (bmp, a promise), so it is
+// the frame the browser said it shows; { sure: false } if none does within
+// config.frameWaitMs, or the browser cannot say. Asked before the seek starts, so
+// the frame it brings is not missed. The browser only shows frames of a video on
+// the page, hence #video-stage.
+function frameShown(v, t, opts) {
+  if (!v.requestVideoFrameCallback) return Promise.resolve({ sure: false });
   return new Promise((resolve) => {
     let id = 0;
-    const timer = setTimeout(() => { v.cancelVideoFrameCallback(id); resolve(false); }, config.frameWaitMs);
+    const timer = setTimeout(() => { v.cancelVideoFrameCallback(id); resolve({ sure: false }); }, config.frameWaitMs);
     const ask = () => {
       id = v.requestVideoFrameCallback((when, meta) => {
-        if (Math.abs(meta.mediaTime - t) <= config.frameSlack) { clearTimeout(timer); resolve(true); } else ask();
+        if (Math.abs(meta.mediaTime - t) > config.frameSlack) { ask(); return; }
+        clearTimeout(timer);
+        const bmp = createImageBitmap(v, opts);
+        bmp.catch(() => {});        // a refusal is met where it is awaited, in frameAt
+        resolve({ sure: true, bmp });
       });
     };
     ask();
@@ -1992,7 +2025,7 @@ async function recogniseVideo(p, item, folders, stats) {
   item.frames = [];
   for (const f of p.frames) {
     const c = await describe({ entry: p.entry, info: p.info, big: f.big, bmp: f.bmp, size: p.size }, stats);
-    item.frames.push({ at: f.at, sure: f.sure, category: c.category, reason: c.reason });
+    item.frames.push({ at: f.at, sure: f.sure, repeat: f.repeat, category: c.category, reason: c.reason });
   }
   return core.videoVote(item.frames);
 }
@@ -2478,7 +2511,7 @@ function runDetails() {
     const was = state.wasIn.get(p.name), of = ex && state.exampleOf.get(p.name);
     return p.name + ' ▸ ' + p.category + (p.category !== p.first ? ' (filter said ' + p.first + ')' : '') + ': ' + p.reason +
       (was ? ' [already in ' + was + ']' : '') + (of ? ' [example of ' + of + ']' : '') +
-      (p.frames ? ' [frames: ' + p.frames.map((f) => f.at.toFixed(1) + ' s' + (f.sure ? '' : ' (frame not confirmed)') + ' ' + f.category + ', ' + f.reason).join('; ') + ']' : '');
+      (p.frames ? ' [frames: ' + p.frames.map((f) => f.at.toFixed(1) + ' s' + (f.sure ? '' : ' (frame not confirmed)') + (f.repeat ? ' (same picture as an earlier frame)' : '') + ' ' + f.category + ', ' + f.reason).join('; ') + ']' : '');
   });
   const failed = ex ? state.exampleUse.flatMap((u) => u.failed.map((f) => 'example not used: ' + u.folder + '/' + f)) : [];
   return [head].concat(lines, failed).join('\n');

@@ -128,7 +128,7 @@ function pageFixtures() {
       return c.convertToBlob({ type, quality: 0.9 });
     },
     // A short WebM clip recorded from a canvas: one third per segment, each a flat
-    // colour or { pattern, hue, seed } (a drawn pattern). Recording runs in real
+    // colour or { pattern, hue, seed } (a drawn pattern), with a small square moving across. Recording runs in real
     // time, so the Node side keeps each clip it has made (clipBytes) for later tests.
     async clip(segments, { w = 320, h = 240, ms = 1200 } = {}) {
       const c = document.createElement('canvas'); c.width = w; c.height = h;
@@ -144,6 +144,9 @@ function pageFixtures() {
         const draw = () => {
           const t = performance.now() - t0, k = Math.min(looks.length - 1, Math.floor(t / (ms / looks.length)));
           if (typeof looks[k] === 'string') { x.fillStyle = looks[k]; x.fillRect(0, 0, w, h); } else x.drawImage(looks[k], 0, 0, w, h);
+          // A small darker square moving across: like a camera's noise, no two frames of a
+          // clip are the very same picture, while each frame keeps its colour.
+          x.fillStyle = 'rgba(0,0,0,0.3)'; x.fillRect(Math.round((w - 12) * t / ms), h - 16, 12, 12);
           if (t < ms) requestAnimationFrame(draw); else done();
         };
         draw();
@@ -621,6 +624,17 @@ test('sha256: a big file is hashed a piece at a time and matches Node at every b
   eq(r.huge, sha(hb), 'a file over the limit is never read whole');
   eq(r.whole, 'RangeError', 'under the limit it is read whole (so the test above means something)');
   eq(r.defaults, [64 * 1048576, 4 * 1048576], 'photos (up to 64 MB) hashed whole, bigger files in 4 MB pieces');
+  await ctx.close();
+}, { core: true });
+
+test('samePicture: the very same bytes only; one byte or one length apart is another picture', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const c = window.filter.core, a = [10, 20, 30, 255, 0, 7];
+    return [c.samePicture(a, a.slice()), c.samePicture(a, [10, 20, 30, 255, 0, 8]), c.samePicture(a, [11, 20, 30, 255, 0, 7]),
+      c.samePicture(a, a.slice(0, 5)), c.samePicture(a.slice(0, 5), a), c.samePicture([], [])];
+  });
+  eq(r, [true, false, false, false, false, true], 'same, last byte, first byte, shorter, longer, both empty');
   await ctx.close();
 }, { core: true });
 
@@ -1454,6 +1468,48 @@ test('a video frame the browser refuses at first is tried again a little later; 
   await sort(page);
   const line = (await page.evaluate(() => window.filter.runDetails())).split('\n').find((l) => l.startsWith('PXL_20261029_095200000.webm'));
   assert(/^PXL_20261029_095200000\.webm ▸ people: 2 of 3 frames people: .* \[frames: 0\.1 s \(frame not confirmed\) people, /.test(line), 'unconfirmed frames said so: ' + line);
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
+test('a frame that comes out as the very picture of an earlier one is taken again a little later; one that always does is kept and marked', async () => {
+  const { ctx, page } = await newApp();
+  await openCamera(page);
+  // Like Gary's runs (05/11/26): the browser says the right frame is on show, but the
+  // picture taken is the one before. Here a video's first picture is handed over again
+  // in place of the second ('once'), or of every later one ('always').
+  await page.evaluate(() => {
+    const real = window.createImageBitmap, first = new Map();
+    window.__caps = [];
+    window.__stale = 'once';
+    window.createImageBitmap = async (src, ...rest) => {
+      if (!(src instanceof HTMLVideoElement)) return real(src, ...rest);
+      const n = window.__caps.filter((c) => c.src === src).length;
+      const stale = first.has(src) && (window.__stale === 'always' || (window.__stale === 'once' && n === 1));
+      window.__caps.push({ src, at: src.currentTime, stale });
+      if (stale) return real(first.get(src));
+      const b = await real(src, ...rest);
+      if (!first.has(src)) first.set(src, await real(b));
+      return b;
+    };
+  });
+  await sort(page);
+  const videos = () => page.evaluate(() => Object.fromEntries(window.filter.state.plan.filter((x) => x.kind === 'video' && x.frames)
+    .map((x) => [x.name, [x.category, x.frames.map((f) => f.category + (f.repeat ? ' repeat' : ''))]])));
+  let v = await videos();
+  eq(v['PXL_20261029_095100000.webm'], ['other', ['people', 'other', 'pets']], 'the stale picture caught and taken again: red, green, blue as recorded');
+  eq(v['PXL_20261029_095200000.webm'], ['people', ['people', 'people', 'pets']], 'and in the other video');
+  const caps = await page.evaluate(() => window.__caps.map((c) => [Math.round(c.at * 10) / 10, c.stale]));
+  eq(caps.length, 8, 'one picture more per video');
+  assert(caps[1][1] && !caps[2][1] && Math.abs(caps[2][0] - caps[1][0] - 0.1) < 0.05, 'taken again 0.1 s later: ' + JSON.stringify(caps.slice(0, 4)));
+  await page.click('#btn-restart'); await page.click('#btn-restart');
+  await page.evaluate(() => { window.__caps = []; window.__stale = 'always'; });
+  await sort(page);
+  v = await videos();
+  eq(v['PXL_20261029_095100000.webm'], ['people', ['people', 'people repeat', 'people repeat']], 'always the first picture: kept after 3 tries, marked');
+  eq(await page.evaluate(() => window.__caps.length), 14, 'three tries for each later frame');
+  const line = (await page.evaluate(() => window.filter.runDetails())).split('\n').find((l) => l.startsWith('PXL_20261029_095100000.webm'));
+  assert(/\[frames: 0\.1 s people, [^;]*; 0\.\d s \(same picture as an earlier frame\) people, [^;]*; 1\.\d s \(same picture as an earlier frame\) people, /.test(line), 'marked in the run details: ' + line);
   assert(page.errors.length === 0, page.errors.join('; '));
   await ctx.close();
 });

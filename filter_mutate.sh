@@ -193,6 +193,8 @@ newest: same-second number ignored ||| (k[0] === key[0] && k[1] > key[1]) ||| fa
 newest: number compared as text ||| const k = [m[1], m[2] ? +m[2] : 1]; ||| const k = [m[1], m[2] ? m[2] : 1];
 newest: oldest wins ||| if (!key || k[0] > key[0] || ||| if (!key || k[0] < key[0] ||
 newest: kind of log ignored ||| new RegExp('^' + prefix + ||| new RegExp('^' + 'run-' +
+frame: length not compared ||| a.length === b.length && a.every ||| a.every
+frame: one byte alike is enough ||| a.every((x, i) => x === b[i]) ||| a.some((x, i) => x === b[i])
 cosine: second list's size ignored ||| return na && nb ? dot / Math.sqrt(na * nb) : 0; ||| return na && nb ? dot / Math.sqrt(na * na) : 0;
 cosine: no square root ||| dot / Math.sqrt(na * nb) ||| dot / (na * nb)
 cosine: all-zero list gives nonsense ||| return na && nb ? dot / Math.sqrt(na * nb) : 0; ||| return dot / Math.sqrt(na * nb);
