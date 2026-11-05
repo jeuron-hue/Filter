@@ -5,6 +5,9 @@
 //    into a cache, so the app opens with no network at all. MediaPipe and its
 //    models (about 35 MB) go in a second cache named by their pinned version, so
 //    an app release does not download them again; only a new pin does.
+//    TinyCLIP and onnxruntime-web (about 99 MB, for Gary's typed folders) go in
+//    a third cache, named the same way, but only when first asked for: most
+//    runs never need them, so installing does not download them.
 // 2. On every request for one of our own files it answers from that cache first.
 //    It never touches any other website: requests to other origins are ignored.
 //
@@ -12,7 +15,7 @@
 // in filter.html (filter_checks.cjs fails if they differ). A new version makes
 // the browser install a fresh worker, and the app shows "Update available".
 
-const CACHE_VERSION = '0.4.1';
+const CACHE_VERSION = '0.5.0';
 const CACHE = 'filter-v' + CACHE_VERSION;
 // Must name the @mediapipe/tasks-vision version in the filter.html build notes
 // (filter_checks.cjs enforces it). Change the suffix whenever a file below changes.
@@ -31,6 +34,18 @@ const SHELL = [
   'vendor/fonts/barlow-semi-condensed-latin-600-normal.woff2',
   'vendor/fonts/ibm-plex-mono-latin-400-normal.woff2',
   'vendor/fonts/ibm-plex-mono-latin-500-normal.woff2',
+];
+
+// Must name the onnxruntime-web version in the filter.html build notes
+// (filter_checks.cjs enforces it). Change the suffix whenever a file below changes.
+const CLIP_CACHE = 'filter-clip-1.30.0-1';
+const CLIP_FILES = [
+  'vendor/ort/ort.wasm.bundle.min.js',
+  'vendor/ort/ort-wasm-simd-threaded.wasm',
+  'vendor/clip/tinyclip_vision_int8.onnx',
+  'vendor/clip/tinyclip_text_int8.onnx',
+  'vendor/clip/vocab.json',
+  'vendor/clip/merges.txt',
 ];
 
 const VENDOR = [
@@ -64,7 +79,8 @@ self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
     await Promise.all(keys
-      .filter((k) => (k.startsWith('filter-v') && k !== CACHE) || (k.startsWith('filter-mediapipe-') && k !== VENDOR_CACHE))
+      .filter((k) => (k.startsWith('filter-v') && k !== CACHE) || (k.startsWith('filter-mediapipe-') && k !== VENDOR_CACHE) ||
+        (k.startsWith('filter-clip-') && k !== CLIP_CACHE))
       .map((k) => caches.delete(k)));
     await self.clients.claim();
   })());
@@ -79,6 +95,19 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return; // never handle other origins
   if (req.method !== 'GET') return;
+
+  // TinyCLIP's files: from their cache, or fetched once and kept there.
+  if (CLIP_FILES.some((f) => url.pathname.endsWith('/' + f))) {
+    event.respondWith((async () => {
+      const clip = await caches.open(CLIP_CACHE);
+      const hit = await clip.match(req);
+      if (hit) return hit;
+      const res = await fetch(req);
+      if (res.ok) await clip.put(req, res.clone());
+      return res;
+    })());
+    return;
+  }
 
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);

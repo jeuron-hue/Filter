@@ -2,6 +2,14 @@
 
 What changed in each version, newest first. Why each change was made, and what Gary's runs on the Pixel showed, is in CLAUDE.md under Phases. Each heading gives the version, the date and time it was released (Singapore time, 24-hour) and the phase.
 
+## v0.5.0, 05/11/26 2259 hrs, F5
+- Your own folders, by description: on the setup screen, type up to 6 folder names (say receipts, or hawker food), remembered on the phone. Tap a name to edit it, the cross to remove it. A name that cannot be a folder is refused with the reason: one of filter's own, a repeat, / \ : * ? " < > |, or a leading dot.
+- Each photo, and each video frame, is checked against your names first. One that clearly fits goes into a subfolder with that name; the rest go by the fixed list exactly as before. With no names typed, nothing changes.
+- New rules in RULES: typedScale 50 (the model's own), typedMin 0.5 (the share a name must reach, a start to be set from your runs), typedSameText 0.93 (a stand-in meaning the same words is left out). There are 13 stand-ins for the fixed folders (STAND_INS).
+- New model: TinyCLIP ViT-39M/16 Text-19M (Microsoft, MIT), int8, split into its picture half (39.8 MB) and word half (45.0 MB), run by onnxruntime-web 1.30.0 (MIT, 14 MB). It is downloaded on the first run with your own folders, about 99 MB once, and kept for offline use; installing does not fetch it.
+- The review lists your folders first. The run details give each photo's best typed name with its score and the runner-up, and the run log keeps the names, the bars and the scores.
+- Tests: names refused and kept, the typed check at each edge, a run with stand-in numbers, copies, log and undo in typed folders. The real model's tokenizer and both halves are checked against Python's numbers, and TinyCLIP is checked to be cached on first use. New static checks cover the vendored runtime and model, and there are new mutants for the typed check, the tokenizer and the pixels.
+
 ## v0.4.1, 05/11/26 2158 hrs, F4
 - A video frame's picture is taken in the browser's own "this frame is on show" call, so it is the frame the browser confirmed. Gary's runs on 05/11/26 had a frame come out as the very picture of an earlier one, with the very same scores, though confirmed.
 - Each frame is checked against the video's earlier frames (a 32 px copy, byte for byte, framePrint 32). The very same picture is taken again 0.1 s later, up to 3 tries; if still the same, it is kept and marked "same picture as an earlier frame" in the run details and the log.

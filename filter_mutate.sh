@@ -2,7 +2,8 @@
 # filter_mutate.sh: mutation run over the core functions: folder reading, choosing
 # the newest photos and videos, reading photo headers, the sorting rules, comparing
 # photos with Gary's examples (F2), a video's frames and their vote (F3), the
-# SHA-256, the safe copy and the safe move, and undo's rules (F4).
+# SHA-256, the safe copy and the safe move, undo's rules (F4), and typed folders:
+# their names, TinyCLIP's tokenizer and pixels, and which typed folder wins (F5).
 #
 # The idea: plant one small, deliberate bug (a "mutant") in the CORE block of
 # filter.html, run the core behaviour tests against it, and expect them to
@@ -213,6 +214,29 @@ example name: case matters ||| RESERVED.includes(name.toLowerCase()) ||| RESERVE
 order: most sure first ||| (a.score == null ? -2 : a.score) - (b.score == null ? -2 : b.score) ||| (b.score == null ? -2 : b.score) - (a.score == null ? -2 : a.score)
 order: no score last ||| (a.score == null ? -2 : a.score) - (b.score == null ? -2 : b.score) ||| (a.score == null ? 2 : a.score) - (b.score == null ? 2 : b.score)
 order: the given list sorted in place ||| core.leastSureFirst = (items) => items.slice().sort( ||| core.leastSureFirst = (items) => items.sort(
+typed: spaces not tidied ||| core.typedName = (s) => String(s).trim().replace(/\s+/g, ' '); ||| core.typedName = (s) => String(s).trim();
+typed: length not checked ||| if (n.length > max) return ||| if (n.length > max + 5) return
+typed: a slash allowed ||| if (/[/\\:*?"<>|\u0000-\u001f]/.test(n)) ||| if (/[\\:*?"<>|\u0000-\u001f]/.test(n))
+typed: hidden names allowed ||| if (n[0] === '.') return 'a name starting with a dot would be hidden'; ||| if (n[0] === ',') return 'a name starting with a dot would be hidden';
+typed: a fixed folder's name allowed ||| if (CATEGORIES.includes(low) || RESERVED.includes(low)) ||| if (RESERVED.includes(low))
+typed: repeats in another case allowed ||| taken.some((t) => t.toLowerCase() === low) ||| taken.some((t) => t === n)
+pick: stand-ins never win ||| if (kept.length && kept[0].score > best.score) return ||| if (false) return
+pick: bar not checked ||| if (share < rules.typedMin) return ||| if (share < 0) return
+pick: bar off by a hair ||| if (share < rules.typedMin) return ||| if (share <= rules.typedMin) return
+pick: same-words rule off ||| stand.filter((s) => core.cosine(s.vec, best.vec) < rules.typedSameText) ||| stand.filter((s) => true)
+pick: same words checked against the picture ||| stand.filter((s) => core.cosine(s.vec, best.vec) < rules.typedSameText) ||| stand.filter((s) => core.cosine(s.vec, vec) < rules.typedSameText)
+pick: scale ignored in the sum ||| const sum = all.reduce((s, x) => s + Math.exp(rules.typedScale * (x.score - top)), 0); ||| const sum = all.reduce((s, x) => s + Math.exp(50 * (x.score - top)), 0);
+pick: worst typed name taken ||| const best = t[0]; ||| const best = t[t.length - 1];
+pick: no typed folders crashes ||| if (!typed.length) return { category: null, reason: '', best: null, next: null }; ||| if (!typed) return null;
+pixels: mean not taken off ||| (rgba[4 * i + c] / 255 - mean[c]) / std[c] ||| (rgba[4 * i + c] / 255) / std[c]
+pixels: colours interleaved ||| out[c * n + i] = ||| out[3 * i + c] =
+tokens: not lower case ||| const t = text.normalize('NFC').replace(/\s+/g, ' ').toLowerCase(); ||| const t = text.normalize('NFC').replace(/\s+/g, ' ');
+tokens: no word end ||| parts[parts.length - 1] += '</w>'; ||| parts[parts.length - 1] += '';
+tokens: first merge found, not the best ranked ||| if (r !== undefined && r < rank) { rank = r; best = i; } ||| if (r !== undefined && best < 0) { rank = r; best = i; }
+tokens: digits kept together ||| \p{L}+|\p{N}|[^ ||| \p{L}+|\p{N}+|[^
+tokens: no end mark ||| return ids.slice(0, maxLen - 1).concat(core.CLIP_EOS); ||| return ids.slice(0, maxLen);
+tokens: byte map off by one ||| for (let b = 174; b <= 255; b++) keep.push(b); ||| for (let b = 173; b <= 255; b++) keep.push(b);
+tokens: unknown pieces dropped ||| ids.push(id === undefined ? core.CLIP_EOS : id); ||| if (id !== undefined) ids.push(id);
 EOF
 )
 
