@@ -2,6 +2,11 @@
 
 What changed in each version, newest first. Why each change was made, and what Gary's runs on the Pixel showed, is in CLAUDE.md under Phases. Each heading gives the version, the date and time it was released (Singapore time, 24-hour) and the phase.
 
+## v0.4.1, 05/11/26 2158 hrs, F4
+- A video frame's picture is taken in the browser's own "this frame is on show" call, so it is the frame the browser confirmed. Gary's runs on 05/11/26 had a frame come out as the very picture of an earlier one, with the very same scores, though confirmed.
+- Each frame is checked against the video's earlier frames (a 32 px copy, byte for byte, framePrint 32). The very same picture is taken again 0.1 s later, up to 3 tries; if still the same, it is kept and marked "same picture as an earlier frame" in the run details and the log.
+- Tests: the test clips carry a small moving square so their frames differ, as a camera's do; a browser that hands over an earlier frame once, or always; new mutants for the frame check. CLAUDE.md records Gary's F4 test on the Pixel (05/11/26).
+
 ## v0.4.0, 31/10/26 0955 hrs, F4
 - Move, alongside copy. On the review a Copy or Move switch (Copy at the start of every run); the bar button reads Copy N or Move N. A move is the safe move: each copy is read back and checked byte for byte (size and SHA-256), the original is read again to make sure it did not change, and only then deleted.
 - Originals are deleted through the file's own handle, not looked up by name, which costs seconds in a big folder. The log records each delete's way and time, and the done screen shows the average.
