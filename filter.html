@@ -14,8 +14,8 @@ filter-examples/ inside the picked folder, each with a few example photos and
 example videos (3 of each is best); filter compares every photo with every
 example photo, and every video with every example video, and proposes the
 closest folder, or "unsure" when nothing is close enough or two folders are too
-close to call. Pick a folder (DCIM/Camera), choose how many of the newest photos
-and videos to sort (one count, both kinds together by date). Review first: filter
+close to call. Pick a folder (DCIM/Camera), choose photos only, videos only or both,
+and how many of the newest to sort (one count, both kinds together by date). Review first: filter
 shows its plan as a grid per folder, Gary moves any picture to another folder,
 then chooses copy (the default) or move and confirms with one tap. Auto: filter
 moves each file straight away and shows what went where afterwards. Files go into
@@ -28,7 +28,7 @@ overwrites anything, and never writes to filter-examples/. Each run writes a log
 to filter-logs/ in the picked folder, saved as the run goes; Undo takes the last
 run back the same safe way.
 
-APP_VERSION 0.5.0 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.6.0 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -228,6 +228,7 @@ body[data-screen="copy"] .screen[data-screen="copy"],body[data-screen="done"] .s
 /* Two-way switch: by description or by example. The chosen half lights amber. */
 .seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line-strong);border-radius:4px;overflow:hidden}
 .seg button{min-height:var(--tap);border:0;background:transparent;color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.14em;text-transform:uppercase}
+.seg.seg3{grid-template-columns:1fr 1fr 1fr}
 .seg button+button{border-left:1px solid var(--line-strong)}
 .seg button[aria-checked="true"]{background:var(--amber-deep);color:var(--amber)}
 .check{display:flex;align-items:center;gap:12px;min-height:var(--tap);font-size:13px;line-height:18px;color:var(--ink-2)}
@@ -338,8 +339,13 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
         <div class="chips" id="typed-list"></div>
         <p class="cap" id="typed-cap"></p>
       </div>
+      <div class="seg seg3" role="radiogroup" aria-label="Sort photos, videos or both">
+        <button type="button" role="radio" id="kinds-photo" data-kinds="photo" aria-checked="false">Photos</button>
+        <button type="button" role="radio" id="kinds-video" data-kinds="video" aria-checked="false">Videos</button>
+        <button type="button" role="radio" id="kinds-both" data-kinds="both" aria-checked="true">Both</button>
+      </div>
       <div class="field">
-        <label for="newest">Newest photos and videos to sort</label>
+        <label for="newest" id="newest-label">Newest photos and videos to sort</label>
         <input type="number" id="newest" min="1" max="2000" step="1" value="200" inputmode="numeric">
       </div>
       <div class="seg" role="radiogroup" aria-label="Run">
@@ -439,7 +445,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.5.0';
+const APP_VERSION = '0.6.0';
 
 // The folders filter knows, in the order they are shown. Photos and videos in
 // "other" stay where they are: nothing is copied for them.
@@ -1444,6 +1450,7 @@ const state = {
   examples: [],       // by example: Gary's folders, [{ name, files: [photos], videos: [videos] }], each { name, handle, kind }
   exampleNotes: [],   // subfolders of filter-examples that could not be used, and why
   by: 'description',  // the recognition mode Gary last chose: 'description' or 'example'
+  kinds: 'both',      // what a run sorts: 'photo', 'video' or 'both' (Gary, 20/11/26), remembered on the phone
   runBy: 'description', // the mode of the run on screen
   cats: CATEGORIES,   // the run's folders, in the order shown
   stay: STAY,         // the run's folder that is not copied: "other" or "unsure"
@@ -1815,16 +1822,28 @@ function renderTyped() {
 
 // What a run can sort: by description, photos and videos; by example, photos only
 // if a folder has example photos, and videos only if one has example videos.
-function runKinds() {
+function canKinds() {
   if (!byExample()) return ['photo', 'video'];
   return ['photo', 'video'].filter((k) => state.examples.some((f) => (k === 'photo' ? f.files : f.videos).length));
 }
+// ... and of those, what Gary chose to sort: photos only, videos only, or both.
+const wantKinds = () => (state.kinds === 'both' ? ['photo', 'video'] : [state.kinds]);
+const runKinds = () => canKinds().filter((k) => wantKinds().includes(k));
+const KIND_WORDS = { photo: 'photos', video: 'videos', both: 'photos and videos' };
+function rememberKinds(k) {
+  state.kinds = k;
+  try { localStorage.setItem('filter-kinds', k); } catch (e) { /* remembered for this session only */ }
+  setupChoice();
+}
+try { const k = localStorage.getItem('filter-kinds'); if (k === 'photo' || k === 'video') state.kinds = k; } catch (e) { /* both */ }
 const runnable = () => { const kinds = runKinds(); return state.files.filter((f) => kinds.includes(f.kind)); };
 
 // The sort button and the count follow the re-check switch: a re-check takes the
 // newest files whether sorted or not.
 function setupChoice() {
-  const ex = byExample(), kinds = runKinds(), recheck = $('#recheck').checked, auto = state.auto && !recheck;
+  const ex = byExample(), can0 = canKinds(), want = wantKinds(), recheck = $('#recheck').checked, auto = state.auto && !recheck;
+  for (const k of ['photo', 'video', 'both']) $('#kinds-' + k).setAttribute('aria-checked', String(state.kinds === k));
+  $('#newest-label').textContent = 'Newest ' + KIND_WORDS[state.kinds] + ' to sort';
   $('#run-review').setAttribute('aria-checked', String(!auto));
   $('#run-auto').setAttribute('aria-checked', String(auto));
   $('#run-auto').disabled = recheck;
@@ -1833,7 +1852,7 @@ function setupChoice() {
   $('#by-example').disabled = !state.examples.length;
   $('#by-cap').textContent = ex
     ? 'Each photo is compared with your example photos in ' + EXAMPLES + '/, each video with your example videos, and goes to the closest folder, or stays as unsure.' +
-      (kinds.includes('video') ? '' : ' Videos are left out: no example folder has videos.') + (kinds.includes('photo') ? '' : ' Photos are left out: no example folder has photos.')
+      (can0.includes('video') || !want.includes('video') ? '' : ' Videos are left out: no example folder has videos.') + (can0.includes('photo') || !want.includes('photo') ? '' : ' Photos are left out: no example folder has photos.')
     : 'Each photo goes to the folder filter knows that fits what is in it; each video by three of its frames.' + (state.examples.length ? '' : ' By example needs a ' + EXAMPLES + '/ folder here.');
   $('#typed-field').hidden = ex;
   renderTyped();
@@ -1851,7 +1870,7 @@ function setupChoice() {
   $('#btn-sort').disabled = can === 0;
   $('#btn-sort').textContent = recheck ? 'Re-check' : auto ? 'Sort and move' : 'Sort';
   $('#setup-note').textContent = can ? '' : list.length ? 'Everything here is already sorted. Re-check it with the switch above.'
-    : state.files.length ? 'Nothing here to sort by example: see above.' : 'No photos or videos in this folder.';
+    : !state.files.some((f) => want.includes(f.kind)) ? 'No ' + KIND_WORDS[state.kinds] + ' in this folder.' : 'Nothing here to sort by example: see above.';
 }
 
 /* ---------- Models ---------- */
@@ -2283,7 +2302,7 @@ async function runSort() {
   state.lastRun = {
     by: state.runBy, chosen: total, photos: stats.photo.n, videos: stats.video.n,
     perPhotoMs: stats.photo.n ? stats.photo.ms / stats.photo.n : 0, perVideoMs: stats.video.n ? stats.video.ms / stats.video.n : 0,
-    closer: stats.closer, looks: stats.looks, failed: stats.failed,
+    closer: stats.closer, looks: stats.looks, failed: stats.failed, kinds: state.kinds,
     ...(state.typedCtx ? { typed: state.typed.slice(), typedLooks: stats.typed } : {}),
   };
   state.autoStopped = state.runAuto && state.stopRequested;
@@ -2868,6 +2887,7 @@ $('#recheck').addEventListener('change', setupChoice);
 $('#newest').addEventListener('input', () => { const v = Math.round(+$('#newest').value); state.newestTyped = v >= 1 ? Math.min(v, config.maxNewest) : null; });
 $('#by-description').addEventListener('click', () => rememberBy('description'));
 $('#by-example').addEventListener('click', () => rememberBy('example'));
+for (const k of ['photo', 'video', 'both']) $('#kinds-' + k).addEventListener('click', () => rememberKinds(k));
 $('#btn-typed-add').addEventListener('click', () => task('adding a folder', addTyped));
 $('#typed-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); task('adding a folder', addTyped); } });
 

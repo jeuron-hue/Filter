@@ -2,6 +2,11 @@
 
 What changed in each version, newest first. Why each change was made, and what Gary's runs on the Pixel showed, is in CLAUDE.md under Phases. Each heading gives the version, the date and time it was released (Singapore time, 24-hour) and the phase.
 
+## v0.6.0, 20/11/26 1350 hrs, F5
+- Photos, Videos or Both: a new switch on the setup screen picks what a run sorts. It is remembered on the phone and starts on Both. The count follows it ("Newest videos to sort"), and a folder with none of the kind chosen says so.
+- By example, the switch combines with what your example folders have: videos only, with no example videos, has nothing to take, and the setup screen says why.
+- The run's record notes which was chosen. Tests: a new one for the switch.
+
 ## v0.5.0, 05/11/26 2259 hrs, F5
 - Your own folders, by description: on the setup screen, type up to 6 folder names (say receipts, or hawker food), remembered on the phone. Tap a name to edit it, the cross to remove it. A name that cannot be a folder is refused with the reason: one of filter's own, a repeat, / \ : * ? " < > |, or a leading dot.
 - Each photo, and each video frame, is checked against your names first. One that clearly fits goes into a subfolder with that name; the rest go by the fixed list exactly as before. With no names typed, nothing changes.
