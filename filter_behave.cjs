@@ -2546,6 +2546,63 @@ test('offline: the service worker caches the app, MediaPipe and the four models'
   await ctx.close();
 });
 
+test('setup: sort photos only, videos only, or both; remembered; said plainly when there is none of the kind chosen', async () => {
+  const { ctx, page } = await newApp();
+  // Remembered on the phone: the choice is read when filter starts.
+  await page.evaluate(() => localStorage.setItem('filter-kinds', 'video'));
+  await page.reload(); await ready(page);
+  eq(await page.evaluate(() => window.filter.state.kinds), 'video', 'remembered');
+  await page.evaluate(() => localStorage.setItem('filter-kinds', 'nonsense'));
+  await page.reload(); await ready(page);
+  eq(await page.evaluate(() => window.filter.state.kinds), 'both', 'anything else is both');
+  await openCamera(page);
+  const view = () => page.evaluate(() => ({
+    on: ['photo', 'video', 'both'].filter((k) => document.querySelector('#kinds-' + k).getAttribute('aria-checked') === 'true'),
+    label: document.querySelector('#newest-label').textContent, n: document.querySelector('#newest').value,
+    sortOff: document.querySelector('#btn-sort').disabled, note: document.querySelector('#setup-note').textContent,
+    small: [...document.querySelectorAll('button')].filter((b) => b.offsetParent && (b.offsetWidth < 44 || b.offsetHeight < 44)).map((b) => b.id || b.textContent),
+  }));
+  let v = await view();
+  eq([v.on, v.label, v.n, v.small], [['both'], 'Newest photos and videos to sort', '13', []], 'both at the start; tap targets');
+  await page.click('#kinds-video');
+  v = await view();
+  eq([v.on, v.label, v.n], [['video'], 'Newest videos to sort', '3'], 'videos only');
+  eq(await page.evaluate(() => localStorage.getItem('filter-kinds')), 'video', 'kept on the phone');
+  await sort(page);
+  eq(sortPlan(await plan(page)), sortPlan({ people: ['PXL_20261029_095200000.webm'], other: ['PXL_20261029_095100000.webm', 'PXL_20261029_095000000.mp4'] }), 'only the videos sorted');
+  await page.evaluate(() => window.filter.show('setup'));
+  await page.click('#kinds-photo');
+  v = await view();
+  eq([v.on, v.label, v.n], [['photo'], 'Newest photos to sort', '10'], 'photos only');
+  await sort(page);
+  const want = Object.fromEntries(Object.entries(EXPECTED_PLAN).map(([k, ns]) => [k, ns.filter((n) => !/\.(webm|mp4)$/.test(n))]).filter(([, ns]) => ns.length));
+  eq(sortPlan(await plan(page)), sortPlan(want), 'only the photos sorted');
+  eq(await page.evaluate(() => window.filter.state.lastRun.kinds), 'photo', 'the run records the choice');
+  // A folder with photos only: videos only has nothing to take.
+  await page.evaluate(async () => {
+    const d = await window.__fx.dir('DCIM/Plain');
+    await window.__fx.put(d, 'PXL_20261030_090000000.jpg', await window.__fx.picture(1));
+    window.__pick = d;
+    window.filter.show('setup');
+  });
+  await run(page, '#btn-change');
+  await page.click('#kinds-video');
+  v = await view();
+  eq([v.sortOff, v.note], [true, 'No videos in this folder.'], 'none of the kind chosen');
+  // By example with no example videos: videos only says why there is nothing.
+  await page.evaluate(async () => { window.__pick = await window.__fx.exampleCamera(); });
+  await run(page, '#btn-change');
+  await page.click('#by-example');
+  v = await view();
+  eq([v.sortOff, v.note], [true, 'Nothing here to sort by example: see above.'], 'by example, videos only, no example videos');
+  assert((await text(page, '#by-cap')).endsWith('Videos are left out: no example folder has videos.'), 'says why');
+  await page.click('#kinds-photo');
+  assert(!(await text(page, '#by-cap')).includes('left out'), 'photos only: nothing to say about videos');
+  eq((await view()).sortOff, false, 'photos by example can run');
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
 /* ---------- Typed folders (F5) ---------- */
 
 // Python's numbers for TinyCLIP (onnxruntime 1.24 and the model's own tokenizer.json, 05/11/26):
