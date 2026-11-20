@@ -8,6 +8,8 @@
 //   - every vendored file has a pinned version in the filter.html build notes,
 //     and every sha256 recorded there matches the file
 //   - the vendored MediaPipe code holds no telemetry and no other site to call
+//   - the vendored onnxruntime-web (F5) likewise, and TinyCLIP's files are
+//     hashed, licensed and fetched only by fixed paths into vendor/
 //   - the service worker caches everything and its version matches APP_VERSION
 //   - the safe move (F4): a file is deleted only by core.removeFile, called only
 //     by the safe move after its copy is read back and checked and by undo's
@@ -80,6 +82,13 @@ const ALLOWED_TOP = new Set([
 // MediaPipe, vendored. Its scripts are the only .js files allowed besides sw.js.
 const MEDIAPIPE_DIR = 'vendor/mediapipe/';
 const MEDIAPIPE_SCRIPTS = ['vendor/mediapipe/vision_bundle.js', 'vendor/mediapipe/vision_wasm_internal.js'];
+// Typed folders (F5): onnxruntime-web runs TinyCLIP. Its one script is the only
+// other .js file allowed. Web addresses in it, reviewed for 1.30.0 (05/11/26):
+// one link in an error message. None is fetched.
+const ORT_DIR = 'vendor/ort/';
+const ORT_SCRIPT = 'vendor/ort/ort.wasm.bundle.min.js';
+const ORT_URLS = ['https://web.dev/cross-origin-isolation-guide/'];
+const CLIP_DIR = 'vendor/clip/';
 // Web addresses in the Emscripten loader, reviewed for 0.10.35 in retouch: every
 // one sits in a comment or error text. None is fetched. An upgrade that adds an
 // address fails here until someone has looked at it.
@@ -243,10 +252,10 @@ function runChecks() {
   check('only allowed files at top level (app logic stays in filter.html)', () => {
     const extra = fs.readdirSync(ROOT).filter((f) => !ALLOWED_TOP.has(f));
     assert(!extra.length, 'unexpected: ' + extra.join(', '));
-    const js = walk('').filter((f) => /\.(m?js|cjs)$/.test(f) && !['sw.js', 'filter_checks.cjs', 'filter_behave.cjs', ...MEDIAPIPE_SCRIPTS].includes(f));
+    const js = walk('').filter((f) => /\.(m?js|cjs)$/.test(f) && !['sw.js', 'filter_checks.cjs', 'filter_behave.cjs', ...MEDIAPIPE_SCRIPTS, ORT_SCRIPT].includes(f));
     assert(!js.length, 'extra script files: ' + js.join(', '));
-    const sub = walk('').filter((f) => f.includes('/') && !/^(icons|vendor\/fonts|vendor\/mediapipe)\/[^/]+$/.test(f));
-    assert(!sub.length, 'files outside icons/, vendor/fonts/, vendor/mediapipe/: ' + sub.join(', '));
+    const sub = walk('').filter((f) => f.includes('/') && !/^(icons|vendor\/fonts|vendor\/mediapipe|vendor\/ort|vendor\/clip)\/[^/]+$/.test(f));
+    assert(!sub.length, 'files outside icons/, vendor/fonts/, vendor/mediapipe/, vendor/ort/, vendor/clip/: ' + sub.join(', '));
   });
 
   check('reference/ is gitignored', () => {
@@ -295,7 +304,7 @@ function runChecks() {
   check('no CDN references in any source file', () => {
     const bad = [];
     for (const f of walk('').filter((x) => /\.(html|js|cjs|json|webmanifest|css|md|sh)$/.test(x))) {
-      if (f === 'CLAUDE.md' || f === 'filter_checks.cjs' || f.startsWith(MEDIAPIPE_DIR)) continue;   // MediaPipe: own check below
+      if (f === 'CLAUDE.md' || f === 'filter_checks.cjs' || [MEDIAPIPE_DIR, ORT_DIR, CLIP_DIR].some((d) => f.startsWith(d))) continue;   // vendored: own checks below
       const src = read(f).toLowerCase();
       for (const h of CDN_HOSTS) if (src.includes(h)) bad.push(f + ': ' + h);
     }
@@ -304,7 +313,11 @@ function runChecks() {
 
   check('no network calls to other origins (fetch, XHR, WebSocket, sendBeacon)', () => {
     const page = stripComments(scriptOf(read('filter.html')));
-    const banned = [/\bfetch\s*\(/, /XMLHttpRequest/, /\bWebSocket\b/, /sendBeacon/, /\bEventSource\b/, /importScripts/, /RTCPeerConnection/, /\bnew\s+Worker\s*\(\s*['"`][a-z]+:/i];
+    // fetch only for TinyCLIP's word lists (F5), each by a fixed path into vendor/clip/.
+    const fetches = Array.from(page.matchAll(/\bfetch\s*\(([^)]*)\)/g)).map((m) => m[1].trim());
+    const badFetch = fetches.filter((a) => !/^'vendor\/clip\/[\w.-]+'$/.test(a));
+    assert(!badFetch.length, 'filter.html fetches: ' + badFetch.join(', '));
+    const banned = [/XMLHttpRequest/, /\bWebSocket\b/, /sendBeacon/, /\bEventSource\b/, /importScripts/, /RTCPeerConnection/, /\bnew\s+Worker\s*\(\s*['"`][a-z]+:/i];
     const hits = banned.filter((re) => re.test(page)).map(String);
     assert(!hits.length, 'filter.html uses: ' + hits.join(', '));
     // Code may only be imported from vendor/, by a fixed relative path.
@@ -425,7 +438,8 @@ function runChecks() {
     assert(html.split('// CORE:BEGIN').length === 2 && html.split('// CORE:END').length === 2, 'CORE markers must appear once each');
     const core = html.slice(a, b);
     for (const f of ['transfer', 'safeCopy', 'safeMove', 'removeFile', 'listAll', 'stillThere', 'undoItems', 'undoStep', 'dropCopy', 'newestLog', 'categorize', 'imageInfo', 'pickNewest', 'readBatch', 'facesFrom', 'objectsFrom', 'normBoxes', 'dedupe', 'closerPeople', 'grid', 'textLike', 'mapAhead',
-      'cosine', 'nearest', 'exampleProblem', 'leastSureFirst', 'sha256', 'sha256Stream', 'meanVec', 'frameTimes', 'videoVote']) {
+      'cosine', 'nearest', 'exampleProblem', 'leastSureFirst', 'sha256', 'sha256Stream', 'meanVec', 'frameTimes', 'videoVote',
+      'typedName', 'typedProblem', 'clipBpe', 'clipWord', 'clipTokens', 'clipPixels', 'typedPick']) {
       assert(new RegExp('core\\.' + f + ' = ').test(core), 'core.' + f + ' must sit inside CORE');
     }
   });
@@ -455,6 +469,12 @@ function runChecks() {
       const licence = notes.split('\n').find((l) => l.includes('vendor/mediapipe/' + m + '.tflite '));
       assert(/Apache-2\.0/.test(licence || ''), 'the ' + m + ' model line must state its licence');
     }
+    // F5: every onnxruntime-web and TinyCLIP file is hashed and states its licence.
+    const f5 = vendored.filter((f) => (f.startsWith(ORT_DIR) || f.startsWith(CLIP_DIR)) && !/\/LICENSE-/.test(f));
+    const lineOf = (f) => notes.split('\n').find((l) => l.includes(f + ' ')) || '';
+    const weak = f5.filter((f) => !/\bMIT\b/.test(lineOf(f)) || !/sha256 [0-9a-f]{64}/.test(lineOf(f)));
+    assert(f5.length === 6, 'expected 6 onnxruntime-web and TinyCLIP files, found ' + f5.length);
+    assert(!weak.length, 'onnxruntime-web and TinyCLIP files need a sha256 and their MIT licence in the build notes: ' + weak.join(', '));
     return vendored.length + ' vendored files';
   });
 
@@ -477,10 +497,28 @@ function runChecks() {
     return MEDIAPIPE_LOADER_URLS.length + ' reviewed comment links in the loader';
   });
 
+  check('vendored onnxruntime-web: no telemetry, no other site it could call', () => {
+    const bundle = read(ORT_SCRIPT);
+    const urlRe = /(?:https?|wss?|ftp):\/\/[^\s"'<>)`]*/g;
+    const extra = [...new Set(bundle.match(urlRe) || [])].filter((u) => !ORT_URLS.includes(u));
+    assert(!extra.length, 'new web addresses in onnxruntime-web, review them: ' + extra.join(', '));
+    // Its Emscripten loader can read a file with XMLHttpRequest, as MediaPipe's can; the
+    // CSP (connect-src 'self') holds it to this origin like everything else.
+    for (const sig of ['sendBeacon', 'google-analytics', 'applicationinsights', 'telemetry.', 'WebSocket']) {
+      assert(!bundle.includes(sig), 'onnxruntime-web contains "' + sig + '"');
+    }
+    return ORT_URLS.length + ' reviewed link in an error message';
+  });
+
   check('service worker caches the shell and every vendored runtime file', () => {
     const sw = read('sw.js');
     const list = (name) => Array.from((sw.match(new RegExp('const ' + name + ' = \\[([\\s\\S]*?)\\];')) || ['', ''])[1].matchAll(/'([^']+)'/g)).map((m) => m[1]);
-    const shell = [...list('SHELL'), ...list('VENDOR')];
+    // TinyCLIP and its runtime (F5) are cached on their first use, not at install: about 99 MB.
+    const shell = [...list('SHELL'), ...list('VENDOR'), ...list('CLIP_FILES')];
+    const ortPin = (read('filter.html').match(/onnxruntime-web (\d+\.\d+\.\d+)/) || [])[1];
+    const cc = (sw.match(/const CLIP_CACHE = '([^']+)'/) || [])[1];
+    assert(ortPin && cc && cc.startsWith('filter-clip-' + ortPin), 'CLIP_CACHE ' + cc + ' does not name the pinned onnxruntime-web ' + ortPin);
+    assert(list('CLIP_FILES').every((f) => f.startsWith(ORT_DIR) || f.startsWith(CLIP_DIR)), 'CLIP_FILES lists files outside ' + ORT_DIR + ' and ' + CLIP_DIR);
     assert(list('SHELL').length, 'no SHELL list in sw.js');
     // The MediaPipe cache is named by its pin, so a new pin always downloads fresh files.
     const pin = (read('filter.html').match(/@mediapipe\/tasks-vision (\d+\.\d+\.\d+)/) || [])[1];

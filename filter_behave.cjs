@@ -49,7 +49,7 @@ const VERSION = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8').match(/const C
 
 /* ---------- Static server ---------- */
 
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.png': 'image/png', '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json', '.txt': 'text/plain', '.wasm': 'application/wasm', '.tflite': 'application/octet-stream' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.png': 'image/png', '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json', '.txt': 'text/plain', '.wasm': 'application/wasm', '.tflite': 'application/octet-stream', '.json': 'application/json', '.onnx': 'application/octet-stream' };
 function startServer() {
   return new Promise((resolve) => {
     const s = http.createServer((req, res) => {
@@ -2543,6 +2543,314 @@ test('offline: the service worker caches the app, MediaPipe and the four models'
       models: await Promise.all(['efficientnet_lite0', 'blaze_face_short_range', 'efficientdet_lite0', 'mobilenet_v3_large'].map(async (m) => !!(await caches.match('vendor/mediapipe/' + m + '.tflite')))) };
   });
   eq(r, { title: 'filter', font: 1, models: [true, true, true, true] }, 'offline page, font and the four models');
+  await ctx.close();
+});
+
+/* ---------- Typed folders (F5) ---------- */
+
+// Python's numbers for TinyCLIP (onnxruntime 1.24 and the model's own tokenizer.json, 05/11/26):
+// the tokens of each phrase, and the cosine between a picture drawn from a formula (below) and three phrases.
+const CLIP_TOKENS = {"a photo of receipts": [49406, 320, 1125, 539, 41181, 49407], "a photo of hawker food": [49406, 320, 1125, 539, 39051, 1559, 49407], "a photo of Mum's birthday cake": [49406, 320, 1125, 539, 4030, 568, 1166, 2972, 49407], "a photo of  my   car": [49406, 320, 1125, 539, 607, 1615, 49407], "a photo of the 2026 F1 race": [49406, 320, 1125, 539, 518, 273, 271, 273, 277, 325, 272, 2471, 49407], "a photo of café crème": [49406, 320, 1125, 539, 15304, 1075, 12138, 614, 49407], "a photo of 日本の寿司": [49406, 320, 1125, 539, 39121, 44353, 21575, 161, 107, 123, 34517, 372, 49407], "a photo of cats & dogs!!": [49406, 320, 1125, 539, 3989, 261, 3255, 748, 49407], "a photo of hello-world (test)": [49406, 320, 1125, 539, 3306, 268, 1002, 263, 1628, 264, 49407], "a photo of IT'S A DOG's life": [49406, 320, 1125, 539, 585, 568, 320, 1929, 568, 970, 49407], "a photo of 🐱 emoji": [49406, 320, 1125, 539, 22979, 16327, 49407], "a photo of naïve façade": [49406, 320, 1125, 539, 1097, 35689, 563, 778, 10067, 1928, 49407], "a photo of x2": [49406, 320, 1125, 539, 343, 273, 49407], "a photo of antidisestablishmentarianism": [49406, 320, 1125, 539, 3120, 4262, 7726, 12658, 1585, 44351, 49407], "a photo of mí casa": [49406, 320, 1125, 539, 76, 23928, 14643, 49407]};
+const CLIP_COS = {"a photo of receipts": 0.141, "a photo of hawker food": 0.1286, "a photo of Mum's birthday cake": 0.0988};
+
+test('typedProblem: names that cannot be folders, filter\'s own, repeats; typedName tidies spaces', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const c = window.filter.core;
+    return [c.typedName('  hawker   food '), ...['receipts', 'Hawker food', '', '   ', 'a'.repeat(30), 'a'.repeat(31), 'a/b', 'a\\b', 'what?', 'x:y', '.hidden', 'Food', 'OTHER', 'unsure',
+      'filter-logs', 'Filter-Examples', 'RECEIPTS', 'my cat'].map((n) => c.typedProblem(n, ['receipts']))];
+  });
+  eq(r, ['hawker food', 'already there', null, 'type what is in the pictures', 'type what is in the pictures', null, 'at most 30 letters',
+    'a folder name cannot hold / \\ : * ? " < > |', 'a folder name cannot hold / \\ : * ? " < > |', 'a folder name cannot hold / \\ : * ? " < > |',
+    'a folder name cannot hold / \\ : * ? " < > |', 'a name starting with a dot would be hidden', 'already one of filter\'s own folders',
+    'already one of filter\'s own folders', 'already one of filter\'s own folders', 'already one of filter\'s own folders', 'already one of filter\'s own folders',
+    'already there', null], 'problems');
+  await ctx.close();
+}, { core: true });
+
+test('typedPick: the best typed name wins only above every stand-in and at the bar; a stand-in meaning the same is left out', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const c = window.filter.core, R = window.filter.RULES;
+    const typed = [{ name: 'receipts', vec: [1, 0, 0, 0] }, { name: 'hawker food', vec: [0, 1, 0, 0] }];
+    const stand = [{ folder: 'other', text: 'a photo of an object', vec: [0, 0, 0, 1] }];
+    const pick = (v, t = typed, s = stand, rules = R) => c.typedPick(v, t, s, rules);
+    // At the bar: one rival at the same score shares 50/50, so 0.5 exactly.
+    const tie = pick([1, 0, 0, 1], [typed[0]]);
+    return {
+      none: pick([1, 0, 0, 0], []),
+      clear: pick([1, 0, 0, 0]),
+      standBetter: pick([0.2, 0, 0, 1]),
+      torn: pick([1, 1, 0, 0.1]),
+      tieAt: tie.category, tieShare: tie.best.share,
+      tieAbove: pick([1, 0, 0, 1], [typed[0]], stand, { ...R, typedMin: 0.5000001 }).category,
+      // "drinks" and a stand-in with nearly its words: the stand-in is left out for it, and only for it.
+      same: pick([0, 0, 1, 0.1], [{ name: 'drinks', vec: [0, 0, 1, 0] }], [{ folder: 'food', text: 'a photo of a drink', vec: [0, 0, 1, 0.1] }]).category,
+      kept: pick([0, 0, 1, 0.1], [{ name: 'drinks', vec: [0, 0, 1, 0] }], [{ folder: 'food', text: 'a photo of a drink', vec: [0, 0, 1, 0.1] }], { ...R, typedSameText: 0.999 }).category,
+      scale: [pick([1, 0.6, 0, 0.5]).category, pick([1, 0.6, 0, 0.5], typed, stand, { ...R, typedScale: 1 }).category],
+    };
+  });
+  eq(r.none, { category: null, reason: '', best: null, next: null }, 'no typed folders');
+  eq([r.clear.category, r.clear.reason], ['receipts', 'receipts 1.00 (1.00), next hawker food 0.00'], 'clear');
+  eq(r.clear.best.name, 'receipts', 'best');
+  eq([r.standBetter.category, r.standBetter.reason], [null, 'own folders: receipts 0.00 (0.20), next a photo of an object 0.98, a stand-in fits better'], 'a stand-in fits better');
+  eq(r.torn.category, null, 'torn between two typed names');
+  assert(/^own folders: (receipts|hawker food) 0\.50 \(0\.71\), next (receipts|hawker food) 0\.71, not sure enough$/.test(r.torn.reason), 'torn: ' + r.torn.reason);
+  eq([r.tieAt, Math.abs(r.tieShare - 0.5) < 1e-9, r.tieAbove], ['receipts', true, null], 'the bar at its edge');
+  eq([r.same, r.kept], ['drinks', null], 'a stand-in with the same words is left out');
+  eq(r.scale, ['receipts', null], 'a smaller scale spreads the share');
+  await ctx.close();
+}, { core: true });
+
+test('clipPixels: CLIP\'s scaling, in three planes; clipTokens: start and end marks, truncation, unknown pieces', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(() => {
+    const c = window.filter.core;
+    const px = Array.from(c.clipPixels(new Uint8ClampedArray([255, 0, 128, 7, 0, 255, 0, 255])));
+    const vocab = { 'a</w>': 5, 'b</w>': 6, 'ab</w>': 7, 'c': 8, 'cd</w>': 9 };
+    const bpe = c.clipBpe(vocab, '#version: 0.2\na b</w>\nc d</w>\n');
+    return { px: px.map((x) => +x.toFixed(4)), ab: c.clipTokens('AB', bpe), parts: c.clipTokens('a  b x', bpe), cd: c.clipTokens('cd', bpe),
+      cut: c.clipTokens('a a a a a', bpe, 4), word: c.clipWord(bpe, 'ab') };
+  });
+  const m = [0.48145466, 0.4578275, 0.40821073], s = [0.26862954, 0.26130258, 0.27577711];
+  const want = [(1 - m[0]) / s[0], (0 - m[0]) / s[0], (0 - m[1]) / s[1], (1 - m[1]) / s[1], (128 / 255 - m[2]) / s[2], (0 - m[2]) / s[2]].map((x) => +x.toFixed(4));
+  eq(r.px, want, 'pixels: red plane, green plane, blue plane; alpha ignored');
+  eq(r.ab, [49406, 7, 49407], 'lower case, merged');
+  eq(r.parts, [49406, 5, 6, 49407, 49407], 'words apart; an unknown piece is the end mark');
+  eq(r.cd, [49406, 9, 49407], 'a merge across the word end');
+  eq(r.cut, [49406, 5, 5, 49407], 'cut to the length, the end mark kept');
+  eq(r.word, ['ab</w>'], 'clipWord');
+  await ctx.close();
+}, { core: true });
+
+test('clipTokens with CLIP\'s own word list gives the tokens of the model\'s tokenizer.json, accents, digits and emoji too', async () => {
+  const { ctx, page } = await newApp();
+  const r = await page.evaluate(async (phrases) => {
+    const c = window.filter.core;
+    const bpe = c.clipBpe(await (await fetch('vendor/clip/vocab.json')).json(), await (await fetch('vendor/clip/merges.txt')).text());
+    return Object.fromEntries(phrases.map((p) => [p, c.clipTokens(p, bpe)]));
+  }, Object.keys(CLIP_TOKENS));
+  eq(r, CLIP_TOKENS, 'tokens');
+  await ctx.close();
+}, { core: true });
+
+// The camera folder with three typed folders, and the stand-in's numbers: receipts,
+// hawker food and drinks along three axes, the stand-ins along a fourth (but one).
+async function openTyped(page, names = ['receipts', 'hawker food', 'drinks']) {
+  await openCamera(page);
+  for (const n of names) { await page.fill('#typed-name', n); await run(page, '#btn-typed-add'); }
+  await page.evaluate(() => {
+    const W = { 'a photo of receipts': [1, 0, 0, 0], 'a photo of hawker food': [0, 1, 0, 0], 'a photo of drinks': [0, 0, 1, 0], 'a photo of a drink': [0, 0, 1, 0.1] };
+    window.__words = [];
+    window.filter.recog.overrideText = (w) => { window.__words.push(w); return W[w] || [0, 0, 0, 1]; };
+    const A = window.__answers;
+    A['PXL_20261029_100600000.jpg'].clip = [1, 0, 0, 0];          // the text page: receipts, before F1's documents
+    A['PXL_20261029_100800000.jpg'].clip = [0, 1, 0, 0.05];       // the pizza: hawker food, before F1's food
+    A['PXL_20261029_100700000.jpg'].clip = [0.05, 0, 0, 1];       // the seashore: a stand-in fits better, F1 says scenery
+    A['PXL_20261029_100900000.jpg'].clip = [0.7, 0.7, 0, 0.1];    // the dog: torn between two, F1 says pets
+    A['PXL_20250101_120000000.jpg'].clip = [0, 0, 1, 0.1];        // the cat: drinks; "a drink" is left out for it
+    // The red, red, blue clip: its red frames are receipts by typed, so the video is.
+    const F = window.__fx.FRAMES;
+    A['PXL_20261029_095200000.webm'] = { frames: { red: { ...F.red, clip: [1, 0, 0, 0] }, blue: F.blue, green: F.green } };
+  });
+}
+
+test('setup: typed folders are added, refused with a reason, edited, removed and remembered; hidden by example', async () => {
+  const { ctx, page } = await newApp({ persistent: true });
+  await openCamera(page);
+  const add = async (t) => { await page.fill('#typed-name', t); await run(page, '#btn-typed-add'); };
+  const view = () => page.evaluate(() => ({ chips: [...document.querySelectorAll('#typed-list .chip button:first-child')].map((b) => b.textContent),
+    cap: document.querySelector('#typed-cap').textContent, box: document.querySelector('#typed-name').value, copies: document.querySelector('#copies-cap').textContent,
+    hidden: document.querySelector('#typed-field').hidden, addOff: document.querySelector('#btn-typed-add').disabled,
+    small: [...document.querySelectorAll('button')].filter((b) => b.offsetParent && (b.offsetWidth < 44 || b.offsetHeight < 44)).map((b) => b.id || b.textContent) }));
+  let v = await view();
+  eq([v.chips, v.cap, v.hidden], [[], 'None yet. Optional.', false], 'none at the start');
+  await add('receipts');
+  await add('  hawker   food ');
+  await add('Food');
+  v = await view();
+  eq(v.chips, ['receipts', 'hawker food'], 'two added, spaces tidied');
+  eq([v.cap, v.box], ['Food: already one of filter\'s own folders.', 'Food'], 'a fixed folder refused, the words kept in the box');
+  await add('RECEIPTS');
+  eq((await view()).cap, 'RECEIPTS: already there.', 'a repeat refused');
+  await add('drinks');
+  v = await view();
+  assert(v.cap.startsWith('Each photo, and each frame of a video, is checked against these first'), 'caption: ' + v.cap);
+  eq(v.copies, 'Files go into subfolders here: receipts, hawker food, drinks, people, pets, food, screenshots, documents, scenery, videos beside the photos. Files in "other" stay where they are. You check the plan first, then choose copy or move; a copy leaves every original where it is.', 'where files go');
+  eq(v.small, [], 'tap targets');
+  // Tap a name to edit it: it goes back in the box. The cross removes it.
+  await page.click('#typed-list .chip:nth-child(2) button:first-child');
+  v = await view();
+  eq([v.chips, v.box], [['receipts', 'drinks'], 'hawker food'], 'edit puts the words back');
+  await page.fill('#typed-name', 'hawker stalls');
+  await page.press('#typed-name', 'Enter');
+  await idle(page);
+  await page.click('#typed-list .chip:nth-child(1) button.x');
+  eq((await view()).chips, ['drinks', 'hawker stalls'], 'edited with Enter, one removed');
+  for (const n of ['a', 'b', 'c', 'd']) await add(n);
+  v = await view();
+  eq([v.chips.length, v.addOff], [6, true], 'six at most');
+  await page.reload(); await ready(page);
+  eq(await page.evaluate(() => window.filter.state.typed), ['drinks', 'hawker stalls', 'a', 'b', 'c', 'd'], 'remembered on the phone');
+  // A list kept on the phone that holds a bad name keeps the rest.
+  await page.evaluate(() => localStorage.setItem('filter-typed', JSON.stringify(['ok', 'a/b', 'OK', 7, 'pets', 'fine'])));
+  await page.reload(); await ready(page);
+  eq(await page.evaluate(() => window.filter.state.typed), ['ok', 'fine'], 'bad names dropped');
+  await page.evaluate(async () => { window.__pick = await window.__fx.exampleCamera(); });
+  await run(page, '#btn-change');
+  await page.click('#by-example');
+  eq((await view()).hidden, true, 'by example: no typed folders');
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
+test('typed folders: none typed, TinyCLIP is never loaded or run and the plan is F1\'s', async () => {
+  const { ctx, page } = await newApp();
+  await openCamera(page);
+  await page.evaluate(() => {
+    window.filter.recog.loadClip = () => { throw new Error('no typed folders: TinyCLIP must not load'); };
+    window.filter.recog.clipImage = () => { throw new Error('no typed folders: TinyCLIP must not run'); };
+  });
+  await sort(page);
+  eq(sortPlan(await plan(page)), sortPlan(EXPECTED_PLAN), 'F1 plan without typed folders');
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
+test('typed folders: checked first, F1 decides the rest; a video by its frames; copies, log and details', async () => {
+  const { ctx, page } = await newApp({ clipboard: true });
+  await openTyped(page);
+  await page.evaluate(() => {
+    window.__seen = 0;
+    const f = window.filter.recog.clipImage.bind(window.filter.recog);
+    window.filter.recog.clipImage = (b, e) => { window.__seen++; return f(b, e); };
+  });
+  await sort(page);
+  eq(await screen(page), 'review', 'screen');
+  const want = { ...EXPECTED_PLAN,
+    receipts: ['PXL_20261029_100600000.jpg', 'PXL_20261029_095200000.webm'], 'hawker food': ['PXL_20261029_100800000.jpg'], drinks: ['PXL_20250101_120000000.jpg'],
+    documents: [], food: [], pets: ['PXL_20261029_100900000.jpg'], people: ['PXL_20261029_101000000.jpg', 'PXL_20261029_100200000.jpg'] };
+  for (const k of Object.keys(want)) if (!want[k].length) delete want[k];
+  eq(sortPlan(await plan(page)), sortPlan(want), 'plan');
+  const words = await page.evaluate(() => window.__words);
+  eq(words.length, 3 + 13, 'the words of each typed name and each stand-in read once per run');
+  // 10 photos less 2 screenshots by name... every photo and every frame is looked at once.
+  const r = await page.evaluate(() => ({
+    heads: [...document.querySelectorAll('.group-head')].map((h) => h.textContent.replace(/stay here.*/, '')),
+    items: Object.fromEntries(window.filter.state.plan.map((p) => [p.name, p.reason])),
+    frames: window.filter.state.plan.find((p) => p.name === 'PXL_20261029_095200000.webm').frames.map((f) => f.category),
+    seen: window.__seen,
+  }));
+  eq(r.heads.slice(0, 3), ['receipts ▸ 2', 'hawker food ▸ 1', 'drinks ▸ 1'], 'Gary\'s folders first');
+  eq(r.seen, 10 + 3 + 3, 'TinyCLIP saw each photo once and each frame of the two playable videos');
+  eq(r.frames, ['receipts', 'receipts', 'pets'], 'the video\'s frames: red, red, then blue (a dog)');
+  eq(r.items['PXL_20261029_100600000.jpg'], 'receipts 1.00 (1.00), next hawker food 0.00', 'text page');
+  assert(r.items['PXL_20261029_100700000.jpg'].endsWith('(own folders: receipts 0.00 (0.05), next a photo of a person 1.00, a stand-in fits better)'), 'seashore: ' + r.items['PXL_20261029_100700000.jpg']);
+  assert(/^golden retriever 0\.40, pets 0\.60 \(own folders: (receipts|hawker food) 0\.50 \(0\.70\), next (receipts|hawker food) 0\.70, not sure enough\)$/.test(r.items['PXL_20261029_100900000.jpg']), 'dog: ' + r.items['PXL_20261029_100900000.jpg']);
+  assert(/^2 of 3 frames receipts: receipts 1\.00/.test(r.items['PXL_20261029_095200000.webm']), 'video: ' + r.items['PXL_20261029_095200000.webm']);
+  // The sheet offers Gary's folders too.
+  await page.click('.group[data-category="hawker food"] .ph');
+  eq(await page.evaluate(() => [...document.querySelectorAll('#sheet-targets button')].map((b) => b.dataset.category)),
+    ['receipts', 'hawker food', 'drinks', 'people', 'pets', 'food', 'screenshots', 'documents', 'scenery', 'other'], 'sheet');
+  await page.click('#sheet-targets button[data-category="food"]');
+  await page.click('#btn-review-details');
+  const details = await page.evaluate(() => navigator.clipboard.readText());
+  assert(/, own folders receipts, hawker food, drinks \(bar 0\.50, checked 16\)/.test(details.split('\n')[0]), 'details header: ' + details.split('\n')[0]);
+  assert(details.includes('PXL_20261029_100800000.jpg ▸ food (filter said hawker food): hawker food 1.00'), 'details: the change shows');
+  await run(page, '#btn-copy');
+  eq(await screen(page), 'done', 'done');
+  const tree = await camTree(page);
+  eq([filesIn(tree, 'receipts'), filesIn(tree, 'drinks'), filesIn(tree, 'hawker food')], [['PXL_20261029_095200000.webm', 'PXL_20261029_100600000.jpg'], ['PXL_20250101_120000000.jpg'], []],
+    'copies in Gary\'s folders; hawker food never made, as its one photo was sent to food');
+  const logName = (await page.evaluate(async () => { const n = []; for await (const k of (await window.__fx.dir('DCIM/Camera/filter-logs')).keys()) n.push(k); return n; }))[0];
+  const log = await readLog(page, logName);
+  eq([log.typed.names, log.typed.typedMin, log.typed.standIns.length], [['receipts', 'hawker food', 'drinks'], 0.5, 13], 'log: the typed folders and the bar');
+  const d = log.decisions.find((x) => x.name === 'PXL_20250101_120000000.jpg');
+  eq([d.folder, d.typed.best.name, +d.typed.best.score.toFixed(4), d.typed.best.share > 0.99], ['drinks', 'drinks', 0.995, true], 'log: each file\'s typed scores');
+  // Typed folders are ordinary folders to undo: a name with a space too.
+  const copied = (t) => ['receipts', 'drinks', 'hawker food'].flatMap((d) => filesIn(t, d));
+  // Sorted by typed folders counts as sorted for the next run; a typed folder removed and added again is listed again.
+  await run(page, '#btn-again');
+  eq((await rowsOf(page, '#setup-rows'))['Already sorted'], '10', 'already sorted: 3 in Gary\'s folders, 7 in F1\'s');
+  await page.click('#typed-list .chip:nth-child(3) button.x');
+  eq((await rowsOf(page, '#setup-rows'))['Already sorted'], '10', 'the row is from the folder as opened');
+  eq(await page.evaluate(() => window.filter.state.sortedAll.has('PXL_20250101_120000000.jpg')), false, 'drinks removed: its file is not sorted');
+  await page.fill('#typed-name', 'drinks'); await run(page, '#btn-typed-add');
+  eq(await page.evaluate(() => window.filter.state.sortedAll.has('PXL_20250101_120000000.jpg')), true, 'drinks again: sorted again');
+  eq(copied(await camTree(page)).length, 3, 'three copies in Gary\'s folders');
+  await undoTwice(page, '#btn-undo-last');
+  eq(copied(await camTree(page)), [], 'undo takes them back');
+  assert(page.errors.length === 0, page.errors.join('; '));
+  await ctx.close();
+});
+
+test('typed folders: a model that fails to load changes nothing', async () => {
+  const { ctx, page } = await newApp();
+  await openTyped(page);
+  await page.evaluate(() => { window.filter.recog.loadClip = () => Promise.reject(new Error('no model')); });
+  await sort(page);
+  eq(await screen(page), 'setup', 'back on setup');
+  eq(await text(page, '#setup-note'), 'The models did not load: Error: no model. Try again; nothing was changed.', 'says so');
+  eq(filesIn(await camTree(page), 'filter-logs'), [], 'no log, nothing written');
+  await ctx.close();
+});
+
+test('real TinyCLIP: the tokenizer and both halves give Python\'s numbers; a run with typed folders works offline-ready', async () => {
+  const { ctx, page } = await newApp({ models: 'real' });
+  const r = await page.evaluate(async (phrases) => {
+    const f = window.filter, m = await f.recog.loadClip();
+    const tokens = Object.fromEntries(phrases.map((p) => [p, f.core.clipTokens(p, m.bpe)]));
+    // The picture from a formula, so both sides draw the very same pixels at 224 x 224.
+    const rgba = new Uint8ClampedArray(224 * 224 * 4);
+    for (let y = 0; y < 224; y++) for (let x = 0; x < 224; x++) {
+      const i = 4 * (y * 224 + x);
+      rgba[i] = (x * 7 + y * 3) % 256; rgba[i + 1] = (x * x + y) % 256; rgba[i + 2] = (x ^ y) % 256; rgba[i + 3] = 255;
+    }
+    const out = await m.vision.run({ pixel_values: new m.ort.Tensor('float32', f.core.clipPixels(rgba), [1, 3, 224, 224]) });
+    const img = Array.from(out.image_embeds.data);
+    const words = await f.recog.clipTexts(phrases.slice(0, 3));
+    return { tokens, cos: words.map((w) => f.core.cosine(img, w)), len: img.length };
+  }, Object.keys(CLIP_TOKENS));
+  eq(r.tokens, CLIP_TOKENS, 'tokens');
+  eq(r.len, 512, '512 numbers per picture');
+  const want = Object.values(CLIP_COS);
+  assert(r.cos.every((c, i) => Math.abs(c - want[i]) < 0.01), 'cosines ' + r.cos.map((c) => c.toFixed(4)) + ' against Python ' + want);
+  // A whole run with two typed folders on drawn pictures: everything is looked at and given a reason.
+  await page.evaluate(async () => {
+    const fx = window.__fx, cam = await fx.dir('DCIM/Camera');
+    await fx.put(cam, 'PXL_20261029_120000000.jpg', await fx.withExif(await fx.textPage()));
+    await fx.put(cam, 'PXL_20261029_110000000.jpg', await fx.withExif(await fx.pattern('stripes', 200, 5)));
+    window.__pick = cam;
+  });
+  await run(page, '#btn-pick');
+  for (const n of ['receipts', 'stripes']) { await page.fill('#typed-name', n); await run(page, '#btn-typed-add'); }
+  await sort(page);
+  eq(await screen(page), 'review', 'screen');
+  const p = await page.evaluate(() => window.filter.state.plan.map((x) => [x.name, x.category, x.reason, x.typed && x.typed.best.name]));
+  console.log('      real TinyCLIP on drawn pictures: ' + p.map((x) => x[1] + ' (' + x[2] + ')').join('; '));
+  eq(p.length, 2, 'both');
+  for (const x of p) assert(x[3] && x[2].length > 5, 'typed scores for ' + x[0]);
+  const real = page.errors.filter((e) => e !== 'INFO: Created TensorFlow Lite XNNPACK delegate for CPU.');
+  assert(real.length === 0, real.join('; '));
+  await ctx.close();
+});
+
+test('offline: TinyCLIP is not downloaded at install, and is kept once it has been used', async () => {
+  const { ctx, page } = await newApp({ sw: true, models: 'real' });
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await page.waitForFunction(async () => (await caches.keys()).some((k) => k.startsWith('filter-mediapipe-')), null, { timeout: 60000, polling: 250 });
+  await page.reload(); await ready(page);    // the page is now controlled by the worker
+  eq(await page.evaluate(async () => (await caches.keys()).filter((k) => k.startsWith('filter-clip-'))), [], 'nothing at install');
+  await page.evaluate(() => window.filter.recog.loadClip());
+  const kept = await page.evaluate(async () => {
+    const k = (await caches.keys()).find((x) => x.startsWith('filter-clip-'));
+    return k ? (await (await caches.open(k)).keys()).map((r) => new URL(r.url).pathname.replace(/^\//, '')).sort() : [];
+  });
+  eq(kept, ['vendor/clip/merges.txt', 'vendor/clip/tinyclip_text_int8.onnx', 'vendor/clip/tinyclip_vision_int8.onnx', 'vendor/clip/vocab.json',
+    'vendor/ort/ort-wasm-simd-threaded.wasm', 'vendor/ort/ort.wasm.bundle.min.js'], 'all six kept after the first use');
+  await ctx.setOffline(true);
+  await page.reload(); await ready(page);
+  eq(await page.evaluate(async () => { const m = await window.filter.recog.loadClip(); return !!(m && m.vision && m.text && m.bpe); }), true, 'loads offline');
   await ctx.close();
 });
 

@@ -3,9 +3,13 @@
 filter: sorts the photos and videos on Gary's phone into folders by what is in
 them. Installed as a PWA. Everything runs on the phone; nothing is uploaded.
 
-This build is phase F4: photos and videos, recognised in two modes picked per
+This build is phase F5: photos and videos, recognised in two modes picked per
 run, sorted in two run modes picked per run, copied or moved, with undo.
-By description (F1): the fixed list. By example (F2): Gary makes folders in
+By description (F1): the fixed list, plus up to six folders Gary types himself
+(F5), say "receipts" or "hawker food": TinyCLIP, which reads words and pictures
+into the same numbers, checks each photo (and each video frame) against those
+names first; one that clearly fits goes there, the rest go by the fixed list as
+before. By example (F2): Gary makes folders in
 filter-examples/ inside the picked folder, each with a few example photos and
 example videos (3 of each is best); filter compares every photo with every
 example photo, and every video with every example video, and proposes the
@@ -16,7 +20,7 @@ shows its plan as a grid per folder, Gary moves any picture to another folder,
 then chooses copy (the default) or move and confirms with one tap. Auto: filter
 moves each file straight away and shows what went where afterwards. Files go into
 subfolders of the picked folder (people, pets, food, screenshots, documents,
-scenery, or the names of Gary's example folders), videos beside the photos;
+scenery, Gary's typed names, or the names of his example folders), videos beside the photos;
 files in "other" or "unsure" stay where they are. Every copy is read back and
 checked byte for byte (size and SHA-256); a move deletes the original only after
 that, and checks it is gone with one fresh listing per batch. filter never
@@ -24,7 +28,7 @@ overwrites anything, and never writes to filter-examples/. Each run writes a log
 to filter-logs/ in the picked folder, saved as the run goes; Undo takes the last
 run back the same safe way.
 
-APP_VERSION 0.4.1 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
+APP_VERSION 0.5.0 (sw.js CACHE_VERSION must match; filter_checks.cjs enforces it)
 
 Build notes: vendored files and their pinned versions. Never upgrade one silently;
 change the version here in the same commit as the file.
@@ -42,6 +46,31 @@ change the version here in the same commit as the file.
   vendor/mediapipe/efficientdet_lite0.tflite   MediaPipe object detector EfficientDet-Lite0, int8, version 1 (the store's "latest" is the same file), 320 x 320 input, the 80 COCO objects, labels inside the model, 4.6 MB, from the MediaPipe model store (object_detector/efficientdet_lite0/int8/1), downloaded 30/10/26, Apache-2.0 (its publisher, the google/automl repository that released EfficientDet-Lite0, is Apache-2.0; unlike the classifier, the file itself states no licence and MediaPipe has no card for it), sha256 0720bf247bd76e6594ea28fa9c6f7c5242be774818997dbbeffc4da460c723bb
   vendor/mediapipe/mobilenet_v3_large.tflite   MediaPipe image embedder MobileNet-V3 large, float32, version 1 (the store's "latest" is the same file), 224 x 224 input, 1280 numbers per picture, 10.9 MB, from the MediaPipe model store (image_embedder/mobilenet_v3_large/float32/1), downloaded 30/10/26, Apache-2.0 (stated in the model's own metadata; its publisher, tensorflow/models research/slim, is Apache-2.0; MediaPipe has no card for it), sha256 11af3c560dfeed7737cb4c03c23bf52a8403020784192d4dea0b74862a12828d
   vendor/mediapipe/LICENSE-apache-2.0.txt      Apache License 2.0 text from apache.org, copied from retouch, covers the seven files above, sha256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
+  vendor/ort/ort.wasm.bundle.min.js            onnxruntime-web 1.30.0 (14/09/26, npm), dist/ort.wasm.bundle.min.mjs renamed .js (filter imports .js files only), its CPU WebAssembly build with the loader inside, MIT, sha256 11e64bd8ffe11bd1a2a2f0d6275fdfbbba7262f0b76b99b53d228a8a22ef3d90
+  vendor/ort/ort-wasm-simd-threaded.wasm       onnxruntime-web 1.30.0, dist/, 14.2 MB, MIT, sha256 3398c10d07d229bd91b364548e130e0e51a8e5704b88c7c083ebbeb78842dee2
+  vendor/ort/LICENSE-mit.txt                   MIT licence text from microsoft/onnxruntime at v1.30.0, covers the two files above, sha256 2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c
+  vendor/clip/tinyclip_vision_int8.onnx        TinyCLIP ViT-39M/16 Text-19M YFCC-15M, picture half, int8, 224 x 224 input, 512 numbers per picture, 39.8 MB, MIT, sha256 05a16aa7db52e5db231757f299268eb7dde01d6963bfeaca030443aec92740d6
+  vendor/clip/tinyclip_text_int8.onnx          TinyCLIP ViT-39M/16 Text-19M YFCC-15M, word half, int8, 512 numbers per phrase, 45.0 MB, MIT, sha256 6d3f58faa49e52c00477d02a5578c9ea18a7eb01100366847f02a7349a725777
+  vendor/clip/vocab.json                       CLIP's tokenizer, 49408 pieces, from the same export as the model (OpenAI CLIP's tokenizer, MIT), sha256 5047b556ce86ccaf6aa22b3ffccfc52d391ea4accdab9c2f2407da5b742d4363
+  vendor/clip/merges.txt                       CLIP's tokenizer, 48894 merges, from the same export, MIT, sha256 9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a
+  vendor/clip/LICENSE-tinyclip-mit.txt         MIT licence text from microsoft/Cream (TinyCLIP's home), main on 05/11/26, covers the two model halves, sha256 4ecaa5a5bc48d91c899216ba3ab8d9fccbb543e106b75f5792e455631d599ae5
+  vendor/clip/LICENSE-openai-clip-mit.txt      MIT licence text from openai/CLIP, main on 05/11/26, covers vocab.json and merges.txt, sha256 987e63b32f6c89ff5160e429458a872ff048e6860b590a3912e938f9da8f14db
+  TinyCLIP notes (F5, Gary's choice 05/11/26; the options weighed are in CLAUDE.md):
+  the model is wkcn/TinyCLIP-ViT-39M-16-Text-19M-YFCC15M on Hugging Face (Microsoft's
+  TinyCLIP, MIT; 63.5 % ImageNet zero-shot), as exported to ONNX by onnx-community
+  (TinyCLIP-ViT-39M-16-Text-19M-YFCC15M-ONNX, revision 3db5c5bb7947, 12/09/25):
+  onnx/model_int8.onnx, 84.7 MB, sha256 e37ffdc95688b005de45d8c1241697a4f95e325a129ea5e1ab45b2ddaf65c047,
+  the same as Hugging Face lists, downloaded 05/11/26. That one file holds both halves
+  and runs both on every call, so it was split in two with the onnx package 1.23.2:
+  onnx.utils.extract_model(file, out, ['pixel_values'], ['image_embeds']) and
+  (file, out, ['input_ids', 'attention_mask'], ['text_embeds']); nothing else changed.
+  Each half gave exactly the whole file's numbers (difference 0.0), and the split
+  comes out byte for byte the same each time. The tokenizer is rewritten in CORE
+  (core.clipTokens) and checked against the export's tokenizer.json.
+  onnxruntime-web runs on one thread: more need cross-origin isolation, which
+  GitHub Pages cannot give. It fetches only the files filter names (CSP: connect-src
+  'self'). Both are cached on their first use, not at install, as most runs do not
+  need them.
   MediaPipe notes: the same pin as retouch. Only the SIMD build is vendored (Chrome
   on Android has had wasm SIMD since version 91). Why 0.10.35 and not 1.x: from 1.0
   the bundle carries a usage logger that posts to a Google logging server.
@@ -103,7 +132,8 @@ How the file is laid out:
      a. Settings and the recognition rules.
      b. CORE: pure functions: reading a folder in batches, choosing the newest
         files, reading a photo's header (size, camera, orientation, preview),
-        the sorting rules, the frames of a video and their vote, the SHA-256,
+        the sorting rules, the frames of a video and their vote, typed
+        folders (their names, CLIP's tokenizer and pixels, which one wins), the SHA-256,
         the safe copy and the safe move, the one place files are deleted, and
         undo's rules. Tests and the mutation runner target this block.
      c. App: models, the screens, the run, the copy or move, the log, undo,
@@ -202,6 +232,14 @@ body[data-screen="copy"] .screen[data-screen="copy"],body[data-screen="done"] .s
 .seg button[aria-checked="true"]{background:var(--amber-deep);color:var(--amber)}
 .check{display:flex;align-items:center;gap:12px;min-height:var(--tap);font-size:13px;line-height:18px;color:var(--ink-2)}
 .check input{width:24px;height:24px;margin:10px;flex:0 0 auto;accent-color:var(--amber)}
+/* Typed folders (F5): a box to type a name, and the names as chips. */
+.typed{display:flex;flex-direction:column;gap:8px}
+.typed-add{display:flex;gap:8px}
+input[type=text]{flex:1;min-width:0;height:var(--tap);border:1px solid var(--line-strong);border-radius:4px;background:var(--stage);color:var(--ink);padding:0 10px;font:14px var(--font-mono)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:flex;align-items:center;border:1px solid var(--line-strong);border-radius:4px;background:var(--raised)}
+.chip button{border:0;background:transparent;padding:0 12px;font:13px var(--font-mono);color:var(--ink)}
+.chip button.x{color:var(--muted);border-left:1px solid var(--line-strong);font-size:16px}
 input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-strong);border-radius:4px;background:var(--stage);color:var(--ink);padding:0 10px;font:14px var(--font-mono);text-align:right}
 
 /* Progress: a big count and a hairline bar. */
@@ -294,6 +332,12 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
         <button type="button" role="radio" id="by-example" data-by="example" aria-checked="false">By example</button>
       </div>
       <p class="cap" id="by-cap"></p>
+      <div class="typed" id="typed-field">
+        <label class="cap" for="typed-name">Your own folders, named by what is in them (say receipts, or hawker food)</label>
+        <div class="typed-add"><input type="text" id="typed-name" maxlength="30" autocomplete="off" enterkeyhint="done" placeholder="a folder name"><button type="button" class="btn" id="btn-typed-add">Add</button></div>
+        <div class="chips" id="typed-list"></div>
+        <p class="cap" id="typed-cap"></p>
+      </div>
       <div class="field">
         <label for="newest">Newest photos and videos to sort</label>
         <input type="number" id="newest" min="1" max="2000" step="1" value="200" inputmode="numeric">
@@ -395,7 +439,7 @@ input[type=number]{width:112px;height:var(--tap);border:1px solid var(--line-str
    a. Settings and the recognition rules
    ============================================================ */
 
-const APP_VERSION = '0.4.1';
+const APP_VERSION = '0.5.0';
 
 // The folders filter knows, in the order they are shown. Photos and videos in
 // "other" stay where they are: nothing is copied for them.
@@ -470,7 +514,32 @@ const RULES = {
   // videos. Kept apart so they can be set from Gary's runs; they start at the photos' values.
   minSimVideo: 0.32,
   minGapVideo: 0.05,
+  // Typed folders (F5): Gary's own folder names, matched with a picture by TinyCLIP. Each name, as
+  // "a photo of <name>", and each stand-in for the fixed folders (STAND_INS) gets a score: the cosine
+  // between the picture's numbers and the words'. Scores times typedScale are shared out (softmax)
+  // over the typed names and the stand-ins: the best typed name wins if it beats every stand-in and
+  // its share reaches typedMin; otherwise F1's rules decide, exactly as without typed folders.
+  typedScale: 50,       // TinyCLIP's own: its logits are its cosines times 50 (checked against the model)
+  typedMin: 0.5,        // the best typed name's share must reach this (a start, to be set from Gary's runs)
+  typedSameText: 0.93,  // a stand-in whose words mean nearly the same as the typed name's (word-to-word cosine
+                        // at least this) is left out for it: "drinks" against "a drink" 0.96, "documents" against
+                        // "a document" 0.95; "hawker food" against "food" (0.89) stays, so plain food stays in food.
 };
+
+// Typed folders (F5): stand-ins for the fixed folders, so a typed name only wins
+// a picture it fits better than any of them. Broad on purpose ("an animal", not
+// "a cat"): Gary's "my cat" should take cats, and his "hawker food" only the food
+// that looks like it. Word-to-word, TinyCLIP puts every phrase close (0.80 to
+// 0.89 for unrelated ones), which is why typedSameText sits as high as 0.93.
+const STAND_INS = [
+  ['people', 'a photo of a person'], ['people', 'a photo of people'],
+  ['pets', 'a photo of an animal'],
+  ['food', 'a photo of food'], ['food', 'a photo of a drink'],
+  ['screenshots', 'a screenshot'],
+  ['documents', 'a photo of a document'], ['documents', 'a photo of text'],
+  ['scenery', 'a photo of a landscape'], ['scenery', 'a photo of a city'], ['scenery', 'a photo of a building'],
+  ['other', 'a photo of a room'], ['other', 'a photo of an object'],
+];
 
 // Classifier labels per folder, as index ranges in the model's 1000 ImageNet
 // labels: [first, last, 'first label', 'last label']. filter_checks.cjs reads
@@ -517,6 +586,20 @@ const MP = {
   faces: 'vendor/mediapipe/blaze_face_short_range.tflite',
   objects: 'vendor/mediapipe/efficientdet_lite0.tflite',
   embedder: 'vendor/mediapipe/mobilenet_v3_large.tflite',
+};
+
+// Typed folders (F5): TinyCLIP, run by onnxruntime-web, loaded on the first run
+// with a typed folder. Its picture half and word half are two files.
+const CLIP = {
+  wasm: 'vendor/ort/ort-wasm-simd-threaded.wasm',
+  vision: 'vendor/clip/tinyclip_vision_int8.onnx',
+  text: 'vendor/clip/tinyclip_text_int8.onnx',
+  side: 224,            // the picture half sees a 224 x 224 square: the middle of the photo
+  mean: [0.48145466, 0.4578275, 0.40821073],   // CLIP's own colour scaling (preprocessor_config.json)
+  std: [0.26862954, 0.26130258, 0.27577711],
+  maxTyped: 6,          // Gary's own folders at most (a few)
+  maxLength: 30,        // letters in a typed name at most
+  prompt: (name) => 'a photo of ' + name,
 };
 
 /* ============================================================
@@ -1020,6 +1103,107 @@ core.exampleProblem = (name) => {
 // no score (it could not be read) comes first of all.
 core.leastSureFirst = (items) => items.slice().sort((a, b) => (a.score == null ? -2 : a.score) - (b.score == null ? -2 : b.score));
 
+// Typed folders (F5). A typed name as filter keeps it: spaces trimmed and runs of
+// them made one.
+core.typedName = (s) => String(s).trim().replace(/\s+/g, ' ');
+
+// Why a typed name cannot be a folder, or null if it can. taken: the names
+// already typed (compared ignoring case, as Android's storage does). A name like
+// one of Gary's example folders is allowed: both share that folder, as F2's food does.
+core.typedProblem = (name, taken = [], max = CLIP.maxLength) => {
+  const n = core.typedName(name), low = n.toLowerCase();
+  if (!n) return 'type what is in the pictures';
+  if (n.length > max) return 'at most ' + max + ' letters';
+  if (/[/\\:*?"<>|\u0000-\u001f]/.test(n)) return 'a folder name cannot hold / \\ : * ? " < > |';
+  if (n[0] === '.') return 'a name starting with a dot would be hidden';
+  if (CATEGORIES.includes(low) || RESERVED.includes(low)) return 'already one of filter\'s own folders';
+  if (taken.some((t) => t.toLowerCase() === low)) return 'already there';
+  return null;
+};
+
+// CLIP's tokenizer: words to the numbers the word half reads. GPT-2's map of the
+// 256 byte values to printable characters, then byte-pair merges, in the order
+// merges.txt ranks them, within each word; a word's last piece ends in </w>.
+// The same steps as the tokenizer.json shipped with the model (lower case, runs
+// of spaces made one, words split as letters, single digits, or runs of other
+// marks, with 's 't 're 've 'm 'll 'd apart); the tests check it against it.
+core.clipBpe = (vocab, mergesText) => {
+  const ranks = new Map();
+  mergesText.split('\n').filter((l) => l && !l.startsWith('#version')).forEach((l, i) => ranks.set(l, i));
+  const byteChar = [];
+  const keep = [];
+  for (let b = 33; b <= 126; b++) keep.push(b);
+  for (let b = 161; b <= 172; b++) keep.push(b);
+  for (let b = 174; b <= 255; b++) keep.push(b);
+  let n = 0;
+  for (let b = 0; b < 256; b++) byteChar[b] = String.fromCharCode(keep.includes(b) ? b : 256 + n++);
+  return { vocab, ranks, byteChar, cache: new Map() };
+};
+core.clipWord = (bpe, word) => {
+  if (bpe.cache.has(word)) return bpe.cache.get(word);
+  const bytes = new TextEncoder().encode(word);
+  let parts = Array.from(bytes, (b) => bpe.byteChar[b]);
+  parts[parts.length - 1] += '</w>';
+  for (;;) {
+    let best = -1, rank = Infinity;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const r = bpe.ranks.get(parts[i] + ' ' + parts[i + 1]);
+      if (r !== undefined && r < rank) { rank = r; best = i; }
+    }
+    if (best < 0) break;
+    const a = parts[best], b = parts[best + 1], out = [];
+    for (let i = 0; i < parts.length; i++) {
+      if (i < parts.length - 1 && parts[i] === a && parts[i + 1] === b) { out.push(a + b); i++; } else out.push(parts[i]);
+    }
+    parts = out;
+  }
+  bpe.cache.set(word, parts);
+  return parts;
+};
+core.CLIP_BOS = 49406;
+core.CLIP_EOS = 49407;     // also the tokenizer's stand-in for a piece it does not know
+core.clipTokens = (text, bpe, maxLen = 77) => {
+  const t = text.normalize('NFC').replace(/\s+/g, ' ').toLowerCase();
+  const ids = [core.CLIP_BOS];
+  for (const m of t.matchAll(/'s|'t|'re|'ve|'m|'ll|'d|\p{L}+|\p{N}|[^\s\p{L}\p{N}]+/gu)) {
+    for (const p of core.clipWord(bpe, m[0])) { const id = bpe.vocab[p]; ids.push(id === undefined ? core.CLIP_EOS : id); }
+  }
+  return ids.slice(0, maxLen - 1).concat(core.CLIP_EOS);
+};
+
+// A picture's pixels (RGBA bytes, as a canvas gives them) as the picture half
+// reads them: each colour scaled to 0 to 1, less CLIP's mean, over its spread,
+// in three planes (all red, then all green, then all blue).
+core.clipPixels = (rgba, mean = CLIP.mean, std = CLIP.std) => {
+  const n = rgba.length / 4, out = new Float32Array(3 * n);
+  for (let i = 0; i < n; i++) for (let c = 0; c < 3; c++) out[c * n + i] = (rgba[4 * i + c] / 255 - mean[c]) / std[c];
+  return out;
+};
+
+// Which typed folder a picture goes to, if any. vec: the picture's numbers.
+// typed: [{ name, vec }] (each name's words' numbers); stand: [{ folder, text, vec }]
+// (STAND_INS'). The best typed name wins if it scores above every stand-in kept
+// for it and its share of all (scores times typedScale, softmax) reaches typedMin.
+// A stand-in whose words mean nearly the same as the best name's is left out for
+// it (typedSameText). category null: no typed folder; F1's rules decide.
+core.typedPick = (vec, typed, stand, rules = RULES) => {
+  if (!typed.length) return { category: null, reason: '', best: null, next: null };
+  const t = typed.map((x) => ({ name: x.name, score: core.cosine(vec, x.vec), vec: x.vec })).sort((a, b) => b.score - a.score);
+  const best = t[0];
+  const kept = stand.filter((s) => core.cosine(s.vec, best.vec) < rules.typedSameText)
+    .map((s) => ({ name: s.text, folder: s.folder, score: core.cosine(vec, s.vec) })).sort((a, b) => b.score - a.score);
+  const all = t.concat(kept), top = Math.max(...all.map((x) => x.score));
+  const sum = all.reduce((s, x) => s + Math.exp(rules.typedScale * (x.score - top)), 0);
+  const share = Math.exp(rules.typedScale * (best.score - top)) / sum;
+  const rival = [t[1], kept[0]].filter(Boolean).sort((a, b) => b.score - a.score)[0] || null;
+  const said = (x) => x.name + ' ' + x.score.toFixed(2);
+  const says = best.name + ' ' + share.toFixed(2) + ' (' + best.score.toFixed(2) + ')' + (rival ? ', next ' + said(rival) : '');
+  const out = { best: { name: best.name, score: best.score, share }, next: rival && { name: rival.name, score: rival.score } };
+  if (kept.length && kept[0].score > best.score) return { ...out, category: null, reason: 'own folders: ' + says + ', a stand-in fits better' };
+  if (share < rules.typedMin) return { ...out, category: null, reason: 'own folders: ' + says + ', not sure enough' };
+  return { ...out, category: best.name, reason: says };
+};
+
 // Run load(item) up to `depth` items ahead of each(result, i), which sees the
 // results one at a time, in order. each returning false stops the run. Lets the
 // phone read and decode the next photos while the models look at this one.
@@ -1254,6 +1438,9 @@ const state = {
   files: [],          // photos and videos in the folder: { name, handle, kind }
   sorted: {},         // per folder filter copies into (F1's and Gary's): the Set of names already in it
   sortedAll: new Set(),
+  subfolders: new Map(), // the picked folder's subfolders, name -> handle, as read when it was opened
+  typed: [],          // typed folders (F5): Gary's own folder names, remembered on the phone
+  typedCtx: null,     // the run's typed folders and stand-ins with their words' numbers, or null
   examples: [],       // by example: Gary's folders, [{ name, files: [photos], videos: [videos] }], each { name, handle, kind }
   exampleNotes: [],   // subfolders of filter-examples that could not be used, and why
   by: 'description',  // the recognition mode Gary last chose: 'description' or 'example'
@@ -1460,17 +1647,9 @@ async function openFolder(h) {
     if (b.done) break;
   }
   await readExamples(subfolders.get(EXAMPLES));
-  // filter's own folders are small, so listing them is quick. Their names mark
-  // files already sorted, which later runs skip. F1's folders and Gary's are one
-  // set: a photo or video copied by either mode counts as sorted for both.
+  state.subfolders = subfolders;
   state.sorted = {};
-  state.sortedAll = new Set();
-  for (const c of folderNames()) {
-    state.sorted[c] = new Set();
-    const d = subfolders.get(c);
-    if (!d) continue;
-    for await (const x of d.values()) if (x.kind === 'file') { state.sorted[c].add(x.name); state.sortedAll.add(x.name); }
-  }
+  await readSorted();
   state.files = files;
   state.undoDetails = null;
   await readLastRun(subfolders);
@@ -1487,6 +1666,20 @@ async function openFolder(h) {
   u.hidden = !(state.lastLog && state.lastLog.pending);
   u.dataset.label = u.textContent = state.lastLog && state.lastLog.pending ? 'Undo last run: ' + plural(state.lastLog.pending, 'file') : 'Undo last run';
   setupChoice();
+}
+
+// filter's own folders are small, so listing them is quick. Their names mark
+// files already sorted, which later runs skip. F1's folders and Gary's are one
+// set: a photo or video copied by any mode counts as sorted for all. Folders
+// already listed are kept; a typed folder added later is listed when added.
+async function readSorted() {
+  for (const c of folderNames()) {
+    if (state.sorted[c]) continue;
+    state.sorted[c] = new Set();
+    const d = state.subfolders.get(c);
+    if (d) for await (const x of d.values()) if (x.kind === 'file') state.sorted[c].add(x.name);
+  }
+  state.sortedAll = new Set(folderNames().flatMap((c) => [...(state.sorted[c] || [])]));
 }
 
 // The newest run log, and how many of its files are still in the folders it put
@@ -1551,8 +1744,8 @@ async function readExamples(dir) {
   state.exampleNotes.sort();
 }
 
-// Every folder filter copies into: F1's fixed list and Gary's example folders.
-const folderNames = () => [...new Set(CATEGORIES.concat(state.examples.map((f) => f.name)))];
+// Every folder filter copies into: F1's fixed list, Gary's typed folders and his example folders.
+const folderNames = () => [...new Set(CATEGORIES.concat(state.typed, state.examples.map((f) => f.name)))];
 
 // One or two examples of a kind are flagged (3 is best). None at all is not: a
 // folder with no example videos simply takes no videos (Gary, 30/10/26).
@@ -1577,6 +1770,49 @@ function rememberBy(by) {
 }
 try { if (localStorage.getItem('filter-by') === 'example') state.by = 'example'; } catch (e) { /* use the default */ }
 
+// Typed folders (F5): Gary types a name, filter keeps it on the phone. Tap a name
+// to edit it (it goes back in the box), the cross to remove it.
+try {
+  const t = JSON.parse(localStorage.getItem('filter-typed') || '[]');
+  if (Array.isArray(t)) for (const n of t) if (typeof n === 'string' && state.typed.length < CLIP.maxTyped && !core.typedProblem(n, state.typed)) state.typed.push(core.typedName(n));
+} catch (e) { /* none */ }
+function rememberTyped() {
+  try { localStorage.setItem('filter-typed', JSON.stringify(state.typed)); } catch (e) { /* remembered for this session only */ }
+}
+async function addTyped() {
+  const box = $('#typed-name'), name = core.typedName(box.value);
+  const why = state.typed.length >= CLIP.maxTyped ? 'at most ' + CLIP.maxTyped + ' of your own folders' : core.typedProblem(name, state.typed);
+  if (why) { $('#typed-cap').textContent = (name ? name + ': ' : '') + why + '.'; return; }
+  state.typed = state.typed.concat(name);
+  box.value = '';
+  rememberTyped();
+  if (state.folder) await readSorted();
+  setupChoice();
+}
+function dropTyped(name, edit) {
+  state.typed = state.typed.filter((n) => n !== name);
+  if (edit) $('#typed-name').value = name;
+  rememberTyped();
+  if (state.folder) state.sortedAll = new Set(folderNames().flatMap((c) => [...(state.sorted[c] || [])]));
+  setupChoice();
+}
+function renderTyped() {
+  const list = $('#typed-list');
+  list.textContent = '';
+  for (const n of state.typed) {
+    const chip = document.createElement('span'); chip.className = 'chip';
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = n; b.title = 'Edit ' + n;
+    b.addEventListener('click', () => dropTyped(n, true));
+    const x = document.createElement('button'); x.type = 'button'; x.className = 'x'; x.textContent = '×'; x.setAttribute('aria-label', 'Remove ' + n);
+    x.addEventListener('click', () => dropTyped(n, false));
+    chip.append(b, x); list.append(chip);
+  }
+  $('#btn-typed-add').disabled = state.typed.length >= CLIP.maxTyped;
+  $('#typed-cap').textContent = state.typed.length
+    ? 'Each photo, and each frame of a video, is checked against these first; one that clearly fits goes there, the rest as above. The first run with them downloads about 99 MB once.'
+    : 'None yet. Optional.';
+}
+
 // What a run can sort: by description, photos and videos; by example, photos only
 // if a folder has example photos, and videos only if one has example videos.
 function runKinds() {
@@ -1599,8 +1835,10 @@ function setupChoice() {
     ? 'Each photo is compared with your example photos in ' + EXAMPLES + '/, each video with your example videos, and goes to the closest folder, or stays as unsure.' +
       (kinds.includes('video') ? '' : ' Videos are left out: no example folder has videos.') + (kinds.includes('photo') ? '' : ' Photos are left out: no example folder has photos.')
     : 'Each photo goes to the folder filter knows that fits what is in it; each video by three of its frames.' + (state.examples.length ? '' : ' By example needs a ' + EXAMPLES + '/ folder here.');
+  $('#typed-field').hidden = ex;
+  renderTyped();
   const where = ex ? 'subfolders here named like your example folders: ' + state.examples.map((f) => f.name).join(', ')
-    : 'subfolders here: people, pets, food, screenshots, documents, scenery, videos beside the photos';
+    : 'subfolders here: ' + state.typed.concat(CATEGORIES.filter((c) => c !== STAY)).join(', ') + ', videos beside the photos';
   const stay = ex ? 'Unsure files' : 'Files in "other"';
   $('#copies-cap').textContent = recheck ? 'A re-check copies and moves nothing.'
     : auto ? 'Auto: each file is moved into ' + where + ' straight away: copied, the copy checked byte for byte, and only then the original deleted. ' + stay + ' stay where they are. At the end you see what went where, and can undo the run.'
@@ -1688,6 +1926,57 @@ const recog = {
     if (this.override) return (this.override(entry, bmp) || {}).vec || [];
     const embedder = await this.loadEmbedder();
     return Array.from(embedder.embed(bmp).embeddings[0].floatEmbedding);
+  },
+  // Typed folders (F5): TinyCLIP's two halves and its tokenizer, loaded on the
+  // first run with a typed folder. onnxruntime-web runs them on one thread.
+  // Test seams: override(entry, bmp).clip is a picture's numbers, overrideText(words) a phrase's.
+  overrideText: null,
+  clipPromise: null,
+  loadClip() {
+    if (this.override) return Promise.resolve(null);
+    if (!this.clipPromise) {
+      this.clipPromise = (async () => {
+        const ort = await import('./vendor/ort/ort.wasm.bundle.min.js');
+        ort.env.wasm.wasmPaths = { wasm: new URL(CLIP.wasm, location.href).href };
+        ort.env.wasm.numThreads = 1;
+        ort.env.wasm.proxy = false;
+        const opts = { executionProviders: ['wasm'], graphOptimizationLevel: 'all' };
+        const vision = await ort.InferenceSession.create(CLIP.vision, opts);
+        const text = await ort.InferenceSession.create(CLIP.text, opts);
+        const vocab = await fetch('vendor/clip/vocab.json'), merges = await fetch('vendor/clip/merges.txt');
+        if (!vocab.ok || !merges.ok) throw new Error('the tokenizer files did not load');
+        return { ort, vision, text, bpe: core.clipBpe(await vocab.json(), await merges.text()) };
+      })();
+      this.clipPromise.catch(() => { this.clipPromise = null; });
+    }
+    return this.clipPromise;
+  },
+  // Each phrase's numbers, one phrase at a time (so they never depend on the others).
+  async clipTexts(phrases) {
+    if (this.override) return phrases.map((w) => (this.overrideText ? this.overrideText(w) : []));
+    const { ort, text, bpe } = await this.loadClip();
+    const out = [];
+    for (const w of phrases) {
+      const ids = core.clipTokens(w, bpe);
+      const r = await text.run({ input_ids: new ort.Tensor('int64', BigInt64Array.from(ids, BigInt), [1, ids.length]),
+        attention_mask: new ort.Tensor('int64', BigInt64Array.from(ids, () => 1n), [1, ids.length]) });
+      out.push(Array.from(r.text_embeds.data));
+    }
+    return out;
+  },
+  // A picture's numbers: the middle square of the photo, at 224 x 224.
+  async clipImage(big, entry) {
+    if (this.override) return (this.override(entry, big) || {}).clip || [];
+    const { ort, vision } = await this.loadClip();
+    const side = Math.min(big.width, big.height), n = CLIP.side;
+    const sq = await createImageBitmap(big, (big.width - side) >> 1, (big.height - side) >> 1, side, side,
+      { resizeWidth: n, resizeHeight: n, resizeQuality: 'high' });
+    const c = new OffscreenCanvas(n, n), ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(sq, 0, 0);
+    sq.close();
+    const px = core.clipPixels(ctx.getImageData(0, 0, n, n).data);
+    const r = await vision.run({ pixel_values: new ort.Tensor('float32', px, [1, 3, n, n]) });
+    return Array.from(r.image_embeds.data);
   },
   // The closer look: the object detector on overlapping parts of the 1280 px decode.
   // Each part's boxes are put back on the whole photo (as shares of it).
@@ -1912,7 +2201,9 @@ async function runSort() {
   state.undoDetails = null;
   state.runBy = byExample() ? 'example' : 'description';
   const ex = state.runBy === 'example';
-  state.cats = ex ? state.examples.map((f) => f.name).concat(UNSURE) : CATEGORIES;
+  const typed = !ex && state.typed.length > 0;
+  state.cats = ex ? state.examples.map((f) => f.name).concat(UNSURE) : state.typed.concat(CATEGORIES);
+  state.typedCtx = null;
   state.stay = ex ? UNSURE : STAY;
   state.wasIn = new Map();
   for (const c of folderNames()) for (const name of state.sorted[c] || []) state.wasIn.set(name, c);
@@ -1923,7 +2214,7 @@ async function runSort() {
   clearPlan();
   state.stopRequested = false;
   state.exampleUse = [];
-  const stats = { failed: 0, closer: 0, looks: 0, photo: { n: 0, ms: 0 }, video: { n: 0, ms: 0 } };
+  const stats = { failed: 0, closer: 0, looks: 0, typed: 0, photo: { n: 0, ms: 0 }, video: { n: 0, ms: 0 } };
   const tally = Object.fromEntries(state.cats.map((c) => [c, 0]));
   const total = pick.chosen.length;
   $('#run-count').textContent = '0 / ' + total;
@@ -1932,8 +2223,18 @@ async function runSort() {
   $('#run-cap').textContent = 'Loading the models';
   show('run');
   step('loading the models');
-  try { await (ex ? recog.loadEmbedder() : recog.load()); }
-  catch (e) {
+  try {
+    await (ex ? recog.loadEmbedder() : recog.load());
+    if (typed) {
+      // Typed folders: TinyCLIP, and the numbers of each name's words and each stand-in's, once per run.
+      $('#run-cap').textContent = 'Loading the model for your own folders (about 99 MB the first time)';
+      step('loading the model for your own folders');
+      await recog.loadClip();
+      const words = await recog.clipTexts(state.typed.map(CLIP.prompt).concat(STAND_INS.map((x) => x[1])));
+      state.typedCtx = { typed: state.typed.map((name, i) => ({ name, vec: words[i] })),
+        stand: STAND_INS.map(([folder, text], i) => ({ folder, text, vec: words[state.typed.length + i] })) };
+    }
+  } catch (e) {
     $('#setup-note').textContent = 'The models did not load: ' + errText(e) + '. Try again; nothing was changed.';
     show('setup');
     return;
@@ -1960,6 +2261,7 @@ async function runSort() {
         item.category = c.category;
         item.reason = c.reason;
         if (ex) { item.score = c.best ? c.best.score : null; item.best = c.best; item.next = c.next; }
+        if (c.typed) item.typed = c.typed;
         item.thumb = await thumbOf(kind === 'video' ? p.frames[p.frames.length >> 1].bmp : p.bmp);
       } catch (e) {
         item.reason = 'could not recognise: ' + errText(e);
@@ -1982,6 +2284,7 @@ async function runSort() {
     by: state.runBy, chosen: total, photos: stats.photo.n, videos: stats.video.n,
     perPhotoMs: stats.photo.n ? stats.photo.ms / stats.photo.n : 0, perVideoMs: stats.video.n ? stats.video.ms / stats.video.n : 0,
     closer: stats.closer, looks: stats.looks, failed: stats.failed,
+    ...(state.typedCtx ? { typed: state.typed.slice(), typedLooks: stats.typed } : {}),
   };
   state.autoStopped = state.runAuto && state.stopRequested;
   renderReview();
@@ -1994,7 +2297,21 @@ async function runSort() {
 // By description (F1): the three models and the rules, with the closer look for
 // people far away when the first look is not already people or a screenshot.
 // For a video, p is one of its frames.
+// Typed folders (F5) come first: a picture that clearly fits one of Gary's own
+// names goes there; otherwise F1's rules decide, as without typed folders, and
+// the reason ends with the typed names' best score, for the run details.
 async function describe(p, stats) {
+  let typed = null;
+  if (state.typedCtx) {
+    stats.typed++;
+    typed = core.typedPick(await recog.clipImage(p.big || p.bmp, p.entry), state.typedCtx.typed, state.typedCtx.stand);
+    if (typed.category) return { category: typed.category, reason: typed.reason, typed: { best: typed.best, next: typed.next } };
+  }
+  const c = await describeFixed(p, stats);
+  return typed ? { ...c, reason: c.reason + ' (' + typed.reason + ')', typed: { best: typed.best, next: typed.next } } : c;
+}
+
+async function describeFixed(p, stats) {
   stats.looks++;
   const r = await recog.analyse(p.bmp, p.entry);
   const text = textCheck(p.bmp);
@@ -2025,7 +2342,7 @@ async function recogniseVideo(p, item, folders, stats) {
   item.frames = [];
   for (const f of p.frames) {
     const c = await describe({ entry: p.entry, info: p.info, big: f.big, bmp: f.bmp, size: p.size }, stats);
-    item.frames.push({ at: f.at, sure: f.sure, repeat: f.repeat, category: c.category, reason: c.reason });
+    item.frames.push({ at: f.at, sure: f.sure, repeat: f.repeat, category: c.category, reason: c.reason, ...(c.typed ? { typed: c.typed } : {}) });
   }
   return core.videoVote(item.frames);
 }
@@ -2229,7 +2546,7 @@ async function runLog(root, prefix) {
 
 // Every file's decision, copied or not, so a run can be checked and the rules tuned.
 const decisions = () => state.plan.map((p) => ({ name: p.name, kind: p.kind, folder: p.category, suggested: p.first, reason: p.reason,
-  ...(state.runBy === 'example' ? { best: p.best || null, next: p.next || null } : {}), ...(p.frames ? { frames: p.frames } : {}) }));
+  ...(state.runBy === 'example' ? { best: p.best || null, next: p.next || null } : {}), ...(p.typed ? { typed: p.typed } : {}), ...(p.frames ? { frames: p.frames } : {}) }));
 
 // Copy (F1 to F3) or move (F4) every file the plan puts in a folder. A move is
 // the safe move: each copy is read back and checked, and only then the original
@@ -2248,6 +2565,7 @@ async function runTransfer() {
     started: new Date().toISOString(), recognition: state.lastRun, items: [],
   };
   if (state.runBy === 'example') log.examples = state.exampleUse;
+  if (state.typedCtx) log.typed = { names: state.typedCtx.typed.map((t) => t.name), model: 'TinyCLIP ViT-39M/16 Text-19M int8', typedMin: RULES.typedMin, typedScale: RULES.typedScale, typedSameText: RULES.typedSameText, standIns: STAND_INS };
   log.decisions = decisions();
   const out = { move, done: 0, skipped: 0, failed: null, stopped: false, gone: { checks: 0, ms: 0 }, del: { n: 0, ms: 0, by: [] } };
   $('#copy-count').textContent = '0 / ' + total;
@@ -2506,7 +2824,7 @@ function runDetails() {
     countText(state.plan) + ', ' + paceText(r) + ', ' +
     (ex ? 'examples ' + state.exampleUse.map((u) => u.folder + ' ' + u.photos.length + (u.videos.length ? ' + ' + plural(u.videos.length, 'video') : '')).join(', ') +
       ', bars ' + RULES.minSim.toFixed(2) + ' and gap ' + RULES.minGap.toFixed(2) + (videos ? ', for videos ' + RULES.minSimVideo.toFixed(2) + ' and ' + RULES.minGapVideo.toFixed(2) : '')
-      : 'closer look for ' + (r.closer || 0));
+      : 'closer look for ' + (r.closer || 0) + (r.typed ? ', own folders ' + r.typed.join(', ') + ' (bar ' + RULES.typedMin.toFixed(2) + ', checked ' + r.typedLooks + ')' : ''));
   const lines = state.plan.map((p) => {
     const was = state.wasIn.get(p.name), of = ex && state.exampleOf.get(p.name);
     return p.name + ' ▸ ' + p.category + (p.category !== p.first ? ' (filter said ' + p.first + ')' : '') + ': ' + p.reason +
@@ -2550,6 +2868,8 @@ $('#recheck').addEventListener('change', setupChoice);
 $('#newest').addEventListener('input', () => { const v = Math.round(+$('#newest').value); state.newestTyped = v >= 1 ? Math.min(v, config.maxNewest) : null; });
 $('#by-description').addEventListener('click', () => rememberBy('description'));
 $('#by-example').addEventListener('click', () => rememberBy('example'));
+$('#btn-typed-add').addEventListener('click', () => task('adding a folder', addTyped));
+$('#typed-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); task('adding a folder', addTyped); } });
 
 // Two taps to undo, as an undo moves and deletes files: the first only asks.
 function twoTaps(b, fn) {
@@ -2623,7 +2943,7 @@ $('#btn-install').addEventListener('click', async () => {
 
 /* ---------- Start ---------- */
 
-window.filter = { core, config, RULES, LABEL_GROUPS, CLOTHES, OBJECT_GROUPS, CATEGORIES, EXAMPLES, UNSURE, RESERVED, recog, state, show, runDetails };
+window.filter = { core, config, RULES, LABEL_GROUPS, CLOTHES, OBJECT_GROUPS, CATEGORIES, EXAMPLES, UNSURE, RESERVED, CLIP, STAND_INS, recog, state, show, runDetails };
 
 show('start');
 window.filterReady = task('opening', boot);
